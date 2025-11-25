@@ -1,132 +1,206 @@
-from lib.grn_stats import GraphLevelStats, CentralityStats, CriticallityStatistics, InformationExchangeStats
-from lib.utils import _make_serializable
+from lib.grn_stats import GraphStats
+from lib.utils import write_to_json, _make_serializable
 
 import networkx as nx
 from typing import List, Tuple, Dict, Optional, Set
 import os
-import json
-import inspect
+
 import pandas as pd
+import time
 
 
 
 ##TODO: incorporate node_level output (top 10 in centrality, pagerank etc.)
+##TODO: implement z-score calcuation for different conditions (condition_1 vs condition_2)
 ##TODO: basic plotting functions
+##TODO implement clusters/communities with Pathways
 
 
 class GRNArtist:
     """Main class for processing and analyzing Gene Regulatory Networks"""
     
-    def __init__(self, tsv_input, output_dir, directed=True):
+    def __init__(self, tsv_input, output_dir, directed=True, n_cpu=None):
         self.tsv_input = tsv_input
         self.output_dir = output_dir
         self.directed = directed
+        self.n_cpu = n_cpu
 
-
-        #self.significance_threshold = significance_threshold
-        #self.filter_threshold = filter_threshold
 
         self.graph: nx.Graph = None
 
         ## summary statistics
-        # calculated in grn_stats.py
-        self.graphlevelstats = None
-        self.centralitystats = None
-        self.entropystats = None
-        self.criticallitystats = None
-        self.informationexchangestats = None
+        self.graphstats_obj:GraphStats = None
 
         ###
         # calcuated here
         self.node_metrics_df:pd.DataFrame = None
         self.graph_stats:dict = None
 
-        self.stats = None ## output dict to write
+        self.stats = None
     
     def initialise_graph(self):
         self.graph = self.read_from_tsv_edge_list(self.tsv_input, self.directed)
+        
     
     def process_grn_statistics(self):
         ## Initialise data classes
-        self.graphlevelstats = GraphLevelStats(self.graph, self.directed)
-        self.centralitystats = CentralityStats(self.graph, self.directed)
-        self.criticallitystats = CriticallityStatistics(self.graph, self.directed)
-        self.informationexchangestats = InformationExchangeStats(self.graph, self.directed)
+        self.graphstats_obj = GraphStats(self.graph, self.directed)
+
 
         self.stats = {}
-        
-        print("calculating graph level statistics")
-        self.stats.update(self.get_properties_dict(self.graphlevelstats))
-        
-        print("calculating centrality statistics")
-        self.stats.update(self.get_properties_dict(self.centralitystats))
-        
-        print("calculating criticallity statistics")
-        self.stats.update(self.get_properties_dict(self.criticallitystats))
+        self._calc_grn_stats() ## populates self.stats dict
 
-        print("calculating information statistics")
-        self.stats.update(self.get_properties_dict(self.informationexchangestats))
+        self.get_node_level_statistics()
+        self.get_graph_level_statistics()
+
 
 
     def get_graph_level_statistics(self):
         stats = self.stats.copy()
-        
+        stats["n_communities"] = len(stats["leiden_communities"])
+
         for node_stat in [
             "betweenness_centrality", "eigenvector_centrality", "pagerank", "degree_centrality", 
             "in_degree_centrality", "out_degree_centrality", "harmonic_centrality", "triangles", 
-            "closeness_centrality", "eccentricity"
+            "closeness_centrality", "eccentricity", "leiden_communities"
             ]:
             stats.pop(node_stat)
-
-
-
+        self.graph_stats = stats
+        return self.graph_stats
+        
     def get_node_level_statistics(self):
-        node_metrics = {}
-        node_metrics.update(self.stats["betweenness_centrality"])
-        node_metrics.update(self.stats["eigenvector_centrality"])
-        node_metrics.update(self.stats["pagerank"])
-        node_metrics.update(self.stats["degree_centrality"])
-        node_metrics.update(self.stats["in_degree_centrality"])
-        node_metrics.update(self.stats["out_degree_centrality"])
-        node_metrics.update(self.stats["harmonic_centrality"])
-        node_metrics.update(self.stats["triangles"])
-        node_metrics.update(self.stats["closeness_centrality"])
-        node_metrics.update(self.stats["eccentricity"])
+        centrality_stats_keys = [
+           "betweenness_centrality", "eigenvector_centrality", "pagerank", "degree_centrality", 
+            "in_degree_centrality", "out_degree_centrality", "harmonic_centrality", "triangles", 
+            "closeness_centrality", "eccentricity", #"leiden_communities"
+            ]
+        
+        node_metrics = {centrality_key:self.stats.get(centrality_key, {}) for centrality_key in centrality_stats_keys}
+        #node_metrics.update(self.stats["betweenness_centrality"])
+        #node_metrics.update(self.stats["eigenvector_centrality"])
+        #node_metrics.update(self.stats["pagerank"])
+        #node_metrics.update(self.stats["degree_centrality"])
+        #node_metrics.update(self.stats["in_degree_centrality"])
+        #node_metrics.update(self.stats["out_degree_centrality"])
+        #node_metrics.update(self.stats["harmonic_centrality"])
+        #node_metrics.update(self.stats["triangles"])
+        #node_metrics.update(self.stats["closeness_centrality"])
+        #node_metrics.update(self.stats["eccentricity"])
         node_metrics_df = pd.DataFrame(node_metrics)
 
         node_metrics_df["is_in_dominating_set"] = node_metrics_df.index.isin(self.stats["min_weighted_dominating_set"])
         
-        leiden_communities = [{2, 3, 5, 7, 8}, {0, 1, 4, 6, 9}] ## community list of sets
+        leiden_communities = self.stats["leiden_communities"] #[{2, 3, 5, 7, 8}, {0, 1, 4, 6, 9}] ## community list of sets
         
         for community_idx, community_set in enumerate(leiden_communities):
             node_metrics_df.loc[community_set]["leiden_community"] = community_idx
         
-        node_metrics_df["n_targets"] = node_metrics_df.index.apply(lambda x: self.graphlevelstats.query_n_descendants(x))
+        node_metrics_df["n_targets"] = node_metrics_df.index.apply(lambda x: self.graphstats_obj.query_n_descendants(x))
 
 
         self.node_metrics_df = node_metrics_df
         return self.node_metrics_df
 
+
+    def _calc_grn_stats(self):
+        ## Calculate eigenvector and laplacian matrices
+        self.graphstats_obj.calc_adjacency_maxtix()
+        self.graphstats_obj.calc_laplacian_matrix()
+        self.graphstats_obj.calc_eigenvalues()
+
+        ### Calculate centrality measures
+        # Calculate and collect all graph-level statistics using methods from self.graphstats_obj
+        gso = self.graphstats_obj
+
+        
+
+        # Define the functions and the corresponding keys
+        parallel_calls = [
+            ("betweenness_centrality", gso.get_betweenness_centrality),
+            ("eigenvector_centrality", gso.get_eigenvector_centrality),
+            ("pagerank", gso.get_pagerank),
+            ("degree_centrality", gso.get_degree_centrality),
+            ("in_degree_centrality", gso.get_in_degree_centrality),
+            ("out_degree_centrality", gso.get_out_degree_centrality),
+            ("harmonic_centrality", gso.get_harmonic_centrality),
+            ("closeness_centrality", gso.get_closeness_centrality),
+            ("triangles", gso.get_triangles),
+            ("eccentricity", gso.get_eccentricity),
+            ("leiden_communities", gso.get_leiden_communities),
+            ("min_weighted_dominating_set", gso.get_min_weighted_dominating_set),
+            ("n_edges", gso.get_n_edges),
+            ("n_nodes", gso.get_n_nodes),
+            ("avg_in_degree", gso.get_avg_in_degree),
+            ("avg_out_degree", gso.get_avg_out_degree),
+            ("avg_degree", gso.get_avg_degree),
+            ("avg_closeness_centrality", gso.get_avg_closeness_centrality),
+            ("avg_degree_centrality", gso.get_avg_degree_centrality),
+            ("avg_betweenness_centrality", gso.get_avg_betweenness_centrality),
+            ("avg_eigenvector_centrality", gso.get_avg_eigenvector_centrality),
+            ("avg_pagerank_score", gso.get_avg_pagerank_score),
+            ("avg_eccentricity", gso.get_avg_eccentricity),
+            ("center", gso.get_center),
+            ("diameter", gso.get_diameter),
+            ("density", gso.get_density),
+            ("transitivity", gso.get_transitivity),
+            ("n_isolate_subgraphs", gso.get_n_isolate_subgraphs),
+            ("n_triangles", gso.get_n_triangles),
+            ("degree_assortativity", gso.get_degree_assortativity),
+            ("degree_centralization", gso.get_degree_centralization),
+            ("average_clustering_coeff", gso.get_average_clustering_coeff),
+            ("large_clique_size", gso.get_large_clique_size),
+            ("global_efficiency", gso.get_global_efficiency),
+            ("local_efficiency", gso.get_local_efficiency),
+            ("shannon_vertex_entropy", gso.get_shannon_vertex_entropy),
+            ("structural_entropy", gso.get_structural_entropy),
+            ("von_neumann_entropy", gso.get_von_neumann_entropy),
+            ("shannon_degree_centrality_entropy", gso.get_shannon_degree_centrality_entropy),
+            ("shannon_betweenness_centrality_entropy", gso.get_shannon_betweenness_centrality_entropy),
+            ("shannon_pagerank_centrality_entropy", gso.get_shannon_pagerank_centrality_entropy),
+            ("proxy_criticality_branching_ratio", gso.get_proxy_criticality_branching_ratio),
+            ("proxy_average_sensitivity", gso.get_proxy_average_sensitivity),
+            ("sigma", gso.get_sigma),
+            ("omega", gso.get_omega)
+        ]
+
+
+        self.stats = {key:func_call() for key, func_call in parallel_calls}
+
+        # Parallel execution of function-based metrics
+        #import concurrent.futures
+        #with concurrent.futures.ProcessPoolExecutor(max_workers=self.n_cpu) as executor:
+        #    future_to_key = {executor.submit(func): key for key, func in parallel_calls}
+        #    for future in concurrent.futures.as_completed(future_to_key):
+        #        key = future_to_key[future]
+        #        try:
+        #            stats[key] = future.result()
+        #        except Exception as exc:
+        #            print(f"could not calculate for {key}\ngot error:\n{exc}")
+        #            stats[key] = None  # or handle/log the exception as needed
+
+        return self.stats
     
 
     def get_top_nodes(self, metric_column:str|List, top=20):
         return self.node_metrics_df[metric_column].nlargest(top)
         
     
-    def write_stats_dict(self):
-        ### control stats dict if contains non-serializable data
-        serialized_stats_dict = _make_serializable(self.stats)
-        ## write stats json
-        with open(os.path.join(self.output_dir, "stats.json"), "w") as fh:
-            json.dump(serialized_stats_dict, fh)
-
+    def write_node_stats(self):
+        self.node_metrics_df.to_csv(os.path.join(self.output_dir, "node_stats.tsv"), index=True, sep='\t')
+    
+    def write_graph_stats(self):
+        write_to_json(_make_serializable(self.graph_stats), os.path.join(self.output_dir, "graph_stats.json"))
 
     def plot_stats(self):
         import matplotlib.pyplot as plt
         ...
+    
+    def process_grn(self):
+        self.initialise_graph()
+        self.process_grn_statistics()
+        self.write_graph_stats()
+        self.write_node_stats()
         
-
-
     @staticmethod
     def read_from_tsv_edge_list(tsv_path, directed=True)->nx.Graph|nx.DiGraph:
         """
@@ -151,195 +225,8 @@ class GRNArtist:
                 edge_key=None
                 )
 
-    @staticmethod
-    def get_properties_dict(obj):
-        """
-        Extract all properties (not attributes) from a dataclass instance
-        and return them as a dictionary.
-        """
-        properties = {}
-        
-        # Get all members of the class
-        for name, value in inspect.getmembers(type(obj)):
-            # Check if it's a property descriptor
-            if isinstance(value, property):
-                # Get the property value from the instance
-                try:
-                    print(f"calculating for: {name}")
-                    properties[name] = getattr(obj, name)
-                except nx.NetworkXNotImplemented as e:
-                    print(f"calculation for {name} is not implemented.\n{e}")
-                    continue
-        
-        return properties
-
-def plot_graph_with_threshold(G: nx.Graph, threshold: float = 0.4, output_file: str = 'GRN_network.png'):
-    """
-        Plot the graph with edges above threshold highlighted.
-
-        Args:
-        G: NetworkX graph
-        threshold: Weight threshold for highlighting edges
-        output_file: Output filename for the plot
-    """
-    plt.figure(figsize=(10, 10))
-    
-    # Get edge weights
-    edge_weights = nx.get_edge_attributes(G, 'weight')
-    
-    # Separate edges by threshold
-    elarge = [(u, v) for (u, v, d) in G.edges(data=True) if d.get("weight", 0) > threshold]
-    esmall = [(u, v) for (u, v, d) in G.edges(data=True) if d.get("weight", 0) <= threshold]
-    
-    # Calculate layout
-    pos = nx.spring_layout(G, k=0.4, iterations=15, seed=3)
-    
-    # Prepare edge widths
-    width_large = {edge: edge_weights.get(edge, 0) * 10 for edge in elarge}
-    width_small = {edge: max(edge_weights.get(edge, 0), 0) * 10 for edge in esmall}
-    
-    # Draw edges
-    nx.draw_networkx_edges(
-        G, pos,
-        edgelist=list(width_small.keys()),
-        width=list(width_small.values()),
-        edge_color='lightblue',
-        alpha=0.8
-    )
-    nx.draw_networkx_edges(
-        G, pos,
-        edgelist=list(width_large.keys()),
-        width=list(width_large.values()),
-        alpha=0.5,
-        edge_color="blue",
-    )
-    
-    # Draw node labels
-    nx.draw_networkx_labels(G, pos, font_size=10, font_family="sans-serif")
-    
-    # Draw edge weight labels for significant edges
-    edge_labels = {edge: edge_weights.get(edge, 0) for edge in elarge}
-    nx.draw_networkx_edge_labels(G, pos, edge_labels, font_size=15)
-    
-    ax = plt.gca()
-    ax.margins(0.08)
-    plt.axis("off")
-    plt.savefig(output_file, dpi=300, bbox_inches='tight')
-    plt.close()
-
-def comprehensive_node_analysis(self) -> Dict[str, Dict[str, float]]:
-    """
-    Calculate all key metrics for each node
-    """
-    deg_cent = self.degree_centrality()
-    between_cent = self.betweenness_centrality()
-    close_cent = self.closeness_centrality()
-    harm_cent = self.harmonic_centrality()
-    page_rank = self.pagerank()
-    clustering = self.clustering_coefficient()
-    
-    analysis = {}
-    for node in self.G.nodes():
-        if self.directed:
-            in_deg = self.G.in_degree(node)
-            out_deg = self.G.out_degree(node)
-        else:
-            deg = self.G.degree(node)
-            in_deg = out_deg = deg
-        
-        analysis[node] = {
-            'in_degree': in_deg,
-            'out_degree': out_deg,
-            'degree_centrality': deg_cent[node],
-            'betweenness_centrality': between_cent[node],
-            'closeness_centrality': close_cent[node],
-            'harmonic_centrality': harm_cent[node],
-            'pagerank': page_rank[node],
-            'clustering_coeff': clustering[node],
-            'propagation_potential': self.perturbation_propagation_potential(node),
-        }
-    
-    return analysis
-
-def summary_report(self) -> Dict:
-    """Generate a summary report of network statistics"""
-    return {
-        'Network Size': {
-            'nodes': self.G.number_of_nodes(),
-            'edges': self.G.number_of_edges(),
-            'density': nx.density(self.G),
-        },
-        'Stability Metrics': self.network_stability(),
-        'Clustering': {
-            'transitivity': self.transitivity(),
-            'average_clustering': self.average_clustering(),
-        },
-        'Top Hub Genes (by degree)': self._get_top_nodes(self.degree_centrality(), 5),
-        'Top Influential (by PageRank)': self._get_top_nodes(self.pagerank(), 5),
-        'Top Connectors (by betweenness)': self._get_top_nodes(self.betweenness_centrality(), 5),
-    }
-
-def _get_top_nodes(self, centrality_dict: Dict[str, float], n: int = 5) -> List[Tuple[str, float]]:
-    """Get top n nodes by centrality"""
-    return sorted(centrality_dict.items(), key=lambda x: x[1], reverse=True)[:n]
 
 
-
-
-class ProcessGRNSummaryStatistics:
-    """Summary statistics for Gene Regulatory Networks"""
-
-    ### Initialisation method
-    def set_directed_and_undirected_graphs(self):
-        if self.directed:
-            self.directed_graph = self.graph
-            self.undirected_graph = self.graph.to_undirected()
-        else:
-            self.undirected_graph = self.graph
-            self.directed_graph = None
-
-
-    # ========== PATH QUERIES ==========
-    
-    def query_shortest_path(self, node1: str, node2: str) -> List[str]:
-        """Get shortest path between two nodes"""
-        return nx.shortest_path(self.graph, node1, node2)
-    
-    def path_exists(self, node1: str, node2: str) -> bool:
-        """Check if path exists between two nodes"""
-        return nx.has_path(self.graph, node1, node2)
-    
-    # ========== UTILITY METHODS ==========
-    
-    def get_eulerian_path(self) -> List[Tuple[str, str]]:
-        """Get Eulerian path if it exists"""
-        if self.has_eulerian_path:
-            return list(nx.eulerian_path(self.graph))
-        return []
-    
-    def get_significant_edges(self, significance_threshold: float) -> list[tuple[str, str]]:
-        return [edge for edge in self.graph.edges(data=True) if edge[2]['weight'] > significance_threshold]
-    
-    def get_hubs(self, n_hubs: int) -> List[Tuple[str, int]]:
-        """Get top n hubs by degree"""
-        degrees = dict(self.graph.degree())
-        return sorted(degrees.items(), key=lambda x: x[1], reverse=True)[:n_hubs]
-    
-    def get_isolated_nodes(self) -> List[str]:
-        """Get nodes with no connections"""
-        return [node for node in self.graph.nodes() if self.graph.degree(node) == 0]
-    
-    def get_connected_components(self) -> List[set[str]]:
-        """Get all connected components"""
-        if self.directed:
-            return list(nx.weakly_connected_components(self.graph))
-        return list(nx.connected_components(self.graph))
-    
-    def get_cycles(self) -> List[set[str]]:
-        """Get cycle basis (for undirected graphs)"""
-        if self.directed:
-            return [set(cycle) for cycle in nx.simple_cycles(self.graph)]
-        return list(nx.cycle_basis(self.graph))
     
     
 

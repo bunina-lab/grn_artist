@@ -1,4 +1,5 @@
 import numpy as np
+import json
 
 def _make_serializable(obj):
     """
@@ -30,3 +31,7 @@ def _make_serializable(obj):
     except Exception:
         pass
     return obj
+
+def write_to_json(obj, file_path):
+    with open(file_path, "w") as fh:
+        json.dump(obj, fh, indent=4)
