@@ -13,6 +13,7 @@ Includes:
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
+import pandas as pd
 from typing import Dict, Optional, Sequence, Any
 
 def draw_network(
@@ -63,7 +64,7 @@ def draw_network(
 
     # Node coloring
     if community_dict is not None:
-        communities = [community_dict.get(n, 0) for n in G.nodes()]
+        communities = [community_dict.get(n, None) for n in G.nodes()]
         color_vals = communities
         num_colors = len(set(communities))
         cmap_choice = plt.cm.get_cmap(cmap, num_colors)
@@ -267,3 +268,146 @@ def plot_graph_with_threshold(G: nx.Graph, threshold: float = 0.4, output_file: 
     plt.savefig(output_file, dpi=300, bbox_inches='tight')
     plt.close()
 
+
+def plot_top_nodes(df, metric_column, top_n=10, ax=None, title=None):
+    """
+    Plot top N nodes for a given centrality metric.
+    
+    Parameters:
+    -----------
+    df : pandas.DataFrame
+        DataFrame with node names as index and centrality metrics as columns
+    metric_column : str
+        Name of the column to rank and plot
+    top_n : int
+        Number of top nodes to display (default: 10)
+    ax : matplotlib.axes.Axes
+        Axes object to plot on. If None, creates new figure
+    title : str
+        Custom title for the plot. If None, uses metric_column name
+    
+    Returns:
+    --------
+    ax : matplotlib.axes.Axes
+        The axes object with the plot
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(6, 8))
+    
+    # Convert column to numeric, handling errors and non-numeric values
+    if metric_column not in df.columns:
+        ax.text(0.5, 0.5, f'Column "{metric_column}" not found', 
+                ha='center', va='center', transform=ax.transAxes)
+        return ax
+    
+    # Convert to numeric, coercing errors to NaN
+    numeric_series = pd.to_numeric(df[metric_column], errors='coerce')
+    
+    # Check if we have any valid numeric values
+    if numeric_series.isna().all():
+        ax.text(0.5, 0.5, f'No valid numeric values in "{metric_column}"', 
+                ha='center', va='center', transform=ax.transAxes)
+        return ax
+    
+    # Create a temporary dataframe with numeric values for sorting
+    df_numeric = df.copy()
+    df_numeric[metric_column] = numeric_series
+    
+    # Get top N nodes (drop NaN values first)
+    df_valid = df_numeric.dropna(subset=[metric_column])
+    if len(df_valid) == 0:
+        ax.text(0.5, 0.5, f'No valid values in "{metric_column}"', 
+                ha='center', va='center', transform=ax.transAxes)
+        return ax
+    
+    top_nodes = df_valid.nlargest(top_n, metric_column)
+    
+    # Reverse order so highest is on top
+    top_nodes = top_nodes.iloc[::-1]
+    
+    # Create y positions
+    y_pos = np.arange(len(top_nodes))
+    
+    # Plot
+    ax.scatter(top_nodes[metric_column], y_pos, s=80, alpha=0.8, color='#1f77b4')
+    
+    # Customize
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(top_nodes.index)
+    ax.set_xlabel(metric_column.replace('_', ' ').title())
+    
+    if title:
+        ax.set_title(title, fontsize=11, pad=10)
+    else:
+        ax.set_title(f'{metric_column.replace("_", " ").title()}\ntop {top_n}', 
+                    fontsize=11, pad=10)
+    
+    ax.grid(axis='x', alpha=0.3, linestyle='--')
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    
+    return ax
+
+
+def plot_multiple_metrics(df, metrics, top_n=10, figsize=(12, 8), ncols=2, out_path=None):
+    """
+    Create a grid of plots for multiple centrality metrics.
+    
+    Parameters:
+    -----------
+    df : pandas.DataFrame
+        DataFrame with node names as index and centrality metrics as columns
+    metrics : list of str
+        List of column names to plot
+    top_n : int
+        Number of top nodes to display per metric (default: 10)
+    figsize : tuple
+        Figure size (width, height)
+    ncols : int
+        Number of columns in the subplot grid
+    
+    Returns:
+    --------
+    fig : matplotlib.figure.Figure
+        The figure object
+    axes : array of matplotlib.axes.Axes
+        Array of axes objects
+    """
+    nrows = int(np.ceil(len(metrics) / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=figsize)
+    
+    # Flatten axes array for easier iteration
+    if nrows == 1 and ncols == 1:
+        axes = [axes]
+    else:
+        axes = axes.flatten()
+    
+    last_used_axis = -1
+    for i, metric in enumerate(metrics):
+        # Skip if metric column doesn't exist
+        if metric not in df.columns:
+            axes[i].text(0.5, 0.5, f'Column "{metric}" not found', 
+                        ha='center', va='center', transform=axes[i].transAxes)
+            last_used_axis = i
+            continue
+        
+        # Skip if column is not numeric (after conversion attempt)
+        numeric_series = pd.to_numeric(df[metric], errors='coerce')
+        if numeric_series.isna().all():
+            axes[i].text(0.5, 0.5, f'No valid numeric values in "{metric}"', 
+                        ha='center', va='center', transform=axes[i].transAxes)
+            last_used_axis = i
+            continue
+        
+        plot_top_nodes(df, metric, top_n=top_n, ax=axes[i])
+        last_used_axis = i
+    
+    # Hide empty subplots
+    for j in range(last_used_axis + 1, len(axes)):
+        axes[j].set_visible(False)
+    
+    plt.tight_layout()
+    if out_path:
+        plt.savefig(out_path)
+    else:
+        return fig, axes

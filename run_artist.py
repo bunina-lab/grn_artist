@@ -1,5 +1,5 @@
-from lib.grn_processor import GRNArtist
 import os
+import time
 
 def execute(args):
     """
@@ -19,16 +19,23 @@ def execute(args):
         os.environ['NETWORKX_BACKEND_PRIORITY'] = ''
     else:
         os.environ["NX_CUGRAPH_AUTOCONFIG"] = "True"
-        #os.environ['NETWORKX_BACKEND_PRIORITY'] = ''
+        os.environ["NETWORKX_BACKEND_PRIORITY"]="cugraph"
 
     if not os.path.exists(args.outdir):
         os.mkdir(args.outdir)
+    
+    timestart = time.time()
+    from lib.grn_processor import GRNArtist
 
     grn_obj = GRNArtist(
         tsv_input = args.edge_list_tsv,
-        output_dir = args.outdir
+        output_dir = args.outdir,
+        leiden_resolution=args.leiden_resolution
     )
     grn_obj.process_grn()
+
+    time_end = time.time()
+    print(f"Took {(time_end-timestart)/60} mins")
 
 
 if __name__ == "__main__":
@@ -37,6 +44,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="GRN Artist runner")
     parser.add_argument("-i", "--edge_list_tsv", required=True, help="Path to gene - peaks or tf - motif matrix file")
     parser.add_argument("-o", "--outdir", required=True, help="output directory to generate graph and GRN statistics files")
+    parser.add_argument("--leiden_resolution", required=False, default=1.0, type=float, help="Resolution for leiden clustering. Default: 1")
+
 
     args = parser.parse_args()
 

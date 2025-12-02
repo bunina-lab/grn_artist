@@ -1,7 +1,7 @@
 import networkx as nx
 import numpy as np
 from dataclasses import dataclass
-from typing import List, Tuple, Dict, Optional, Set
+from typing import List, Tuple, Dict, Optional, Set, Union
 
 
 """
@@ -15,23 +15,34 @@ Topological benchmarking of algorithms to infer gene regulatory networks from si
 https://academic.oup.com/bioinformatics/article/40/5/btae267/7646844
 
 https://arxiv.org/pdf/1805.01447
+
+Centrality Analysis Methods for Biological Networks and Their Application to Gene Regulatory Networks
+https://pmc.ncbi.nlm.nih.gov/articles/PMC2733090
+
+Personalised PageRank:
+https://ftp.ebi.ac.uk/pub/training/2025/Systems_biology_2025/Systems_biology_2025/Day_3/PhuEGO_tutorials/PhuEGO_tutorial_1/Short_tutorial_for_Systems_Biology_course_July_2025.html
+
 """
 
 
 @dataclass
 class GraphStats:
-    graph: nx.Graph | nx.DiGraph
+    graph: Union[nx.Graph, nx.DiGraph]
     directed: bool
+    seed_nodes: Optional[List[str]] = None
 
     adjacency_matrix = None
     laplacian_matrix = None
     eigenvalues = None
+    seed_nodes_dict = None
     
     # Graph Level Statistics
     avg_in_degree: Optional[float] = None
     avg_out_degree: Optional[float] = None
     avg_degree: Optional[float] = None
     n_edges: Optional[int] = None
+    undireced_n_egdes = None
+    n_self_loops = None
     n_nodes: Optional[int] = None
     girth: Optional[int] = None
     density: Optional[float] = None
@@ -148,6 +159,8 @@ class GraphStats:
     def get_n_edges(self) -> int:
         if self.n_edges is None:
             self.n_edges = self.graph.number_of_edges()
+            self.undireced_n_egdes = self.graph.to_undirected().number_of_edges() if self.directed else self.n_edges
+            self.n_self_loops = nx.number_of_selfloops(self.graph)
         return self.n_edges
     
     def get_n_nodes(self) -> int:
@@ -253,14 +266,23 @@ class GraphStats:
            self.omega = nx.omega(g)
        return self.omega
     
-    # ========== SENSITIVITY-RELATED MEASURES ==========
+    # ========== PATH QUERIES ==========
+    
+    def query_shortest_path(self, node1: str, node2: str) -> List[str]:
+        """Get shortest path between two nodes"""
+        return nx.shortest_path(self.graph, node1, node2)
+    
+    def path_exists(self, node1: str, node2: str) -> bool:
+        """Check if path exists between two nodes"""
+        return nx.has_path(self.graph, node1, node2)
+
     def query_descendants(self, source_node) -> Set:
         return nx.descendants(self.graph, source_node) | {source_node}
     
     def query_n_descendants(self, source_node) -> int:
         return len(nx.descendants(self.graph, source_node) | {source_node})
 
-
+    # ========== SENSITIVITY-RELATED MEASURES ==========
     def perturbation_propagation_potential(self, source_node) -> float:
         """
         How far can a perturbation (knockout/knockdown) propagate from a single node?
@@ -397,23 +419,23 @@ class GraphStats:
         if self.eigenvector_centrality is None:
             # For directed graphs, use eigenvector on undirected version
             G_undirected = self.graph.to_undirected() if self.directed else self.graph
-            try:
-                self.eigenvector_centrality = nx.eigenvector_centrality(G_undirected, max_iter=max_iter, weight="weight", tol=1e-4)
-            except (np.linalg.LinAlgError, nx.AmbiguousSolution, nx.PowerIterationFailedConvergence) as e:
-                print(f"Could not calculate eigenvectors\n{e}\n\nTrying again")
+
+            initial_tol = 1e-06
+
+            for _ in range(5):
                 try:
-                    self.eigenvector_centrality = nx.eigenvector_centrality_numpy(G_undirected, max_iter=max_iter, weight="weight")
+                    self.eigenvector_centrality = nx.eigenvector_centrality(G_undirected, max_iter=max_iter, weight="weight", tol=initial_tol)
                 except (np.linalg.LinAlgError, nx.AmbiguousSolution, nx.PowerIterationFailedConvergence) as e:
-                    print(f"Could not calculate eigenvectors\n{e}\n\nCalculating for largest connected graph")
+                    print(f"Could not calculate eigenvector centrality for tolerance: {initial_tol}")
+                    initial_tol *= 5
+                    continue
+                else:
+                    return self.eigenvector_centrality
+            try:
+                self.eigenvector_centrality = nx.eigenvector_centrality(G_undirected, max_iter=max_iter, weight="weight", tol=initial_tol)
+            except (np.linalg.LinAlgError, nx.AmbiguousSolution, nx.PowerIterationFailedConvergence) as e:
+                    print(f"Could not calculate eigenvector centrality\n{e}\n\n")
                     
-                    if not nx.is_strongly_connected(G_undirected):
-                        # For directed graphs
-                        largest_cc = max(nx.weakly_connected_components(G_undirected), key=len)
-                        G_sub = G_undirected.subgraph(largest_cc).copy()
-                        self.eigenvector_centrality = nx.eigenvector_centrality(G_sub, max_iter=1000)
-                    else:
-                        print("Could not calculate eigenvector centrality in anyway")
-                        self.eigenvector_centrality = None
         return self.eigenvector_centrality
     
 
@@ -426,8 +448,19 @@ class GraphStats:
             adj_matrix = self.calc_adjacency_maxtix()
             alpha = 1 / max(adj_matrix) - 0.01
 
+            initial_tol = 1e-06
+
+            for _ in range(5):
+                try:
+                    self.katz_centrality = nx.katz_centrality(self.graph, alpha=alpha, max_iter=max_iter, tol=initial_tol, weight="weight")
+                except (np.linalg.LinAlgError, nx.AmbiguousSolution, nx.PowerIterationFailedConvergence) as e:
+                    print(f"could not calculate katz_centrality for tolerance: {initial_tol}")
+                    initial_tol *= 5
+                    continue
+                else:
+                    return self.katz_centrality
             try:
-                self.katz_centrality = nx.katz_centrality(self.graph, alpha=alpha, max_iter=max_iter, weight="weight")
+                self.katz_centrality = nx.katz_centrality(self.graph, alpha=0.1, max_iter=max_iter, tol=initial_tol, weight="weight")
             except (np.linalg.LinAlgError, nx.AmbiguousSolution, nx.PowerIterationFailedConvergence) as e:
                 print(f"could not calculate katz_centrality\n{e}")
                 self.katz_centrality = None
@@ -436,12 +469,18 @@ class GraphStats:
     
     def get_pagerank(self) -> Dict[str, float]:
         """
+        https://networkx.org/documentation/stable/reference/algorithms/generated/networkx.algorithms.link_analysis.pagerank_alg.pagerank.html
         PageRank: importance based on incoming edges from important nodes.
         Highly relevant for GRNs: identifies target genes regulated by important genes.
         Range: sum of all values = 1
+        Personalised PageRank:
+        https://ftp.ebi.ac.uk/pub/training/2025/Systems_biology_2025/Systems_biology_2025/Day_3/PhuEGO_tutorials/PhuEGO_tutorial_1/Short_tutorial_for_Systems_Biology_course_July_2025.html
         """
         if self.pagerank is None:
-            self.pagerank = nx.pagerank(self.graph, weight='weight')
+            self.pagerank = nx.pagerank(
+                self.graph, weight='weight', 
+                personalization=self._get_seed_nodes_dict()
+                )
         return self.pagerank
     
     def get_harmonic_centrality(self) -> Dict[str, float]:
@@ -565,8 +604,7 @@ class GraphStats:
     
     def get_leiden_communities(self, resolution=1) -> List[Set]:
         # Note: leiden_communities doesn't cache because it depends on resolution parameter
-        # If you want to cache, you'd need a dict mapping resolution -> communities
-        return nx.community.leiden_communities(self.graph, resolution=resolution, weight="weight", seed=42)
+        return nx.community.leiden_communities(self.graph.to_undirected() if self.directed else self.graph, resolution=resolution, weight="weight", seed=42)
 
     # ============ Entropy Metrics =========
 
@@ -919,4 +957,18 @@ class GraphStats:
         self.proxy_average_sensitivity = avg_in_degree * p * (1 - p)
         return self.proxy_average_sensitivity
     
-     
+    def _get_seed_nodes_dict(self) -> Dict[str, int]:
+        if self.seed_nodes is None:
+            return {}
+
+        if self.seed_nodes_dict is not None:
+            return self.seed_nodes_dict
+        
+        seed_dict = {}
+        for node in self.graph.nodes():
+            if node in self.seed_nodes:
+                seed_dict[node] = 1
+            else:
+                seed_dict[node] = 0
+        self.seed_nodes_dict = seed_dict
+        return self.seed_nodes_dict
