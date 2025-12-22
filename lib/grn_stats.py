@@ -71,6 +71,7 @@ class GraphStats:
     center: Optional[List[str]] = None
     diameter: Optional[float] = None
     min_weighted_dominating_set: Optional[Set[str]] = None
+    degree: Optional[Dict[str, int]] = None
 
     ## Avg calculations
     avg_closeness_centrality: Optional[float] = None
@@ -163,6 +164,9 @@ class GraphStats:
             self.n_self_loops = nx.number_of_selfloops(self.graph)
         return self.n_edges
     
+    def get_degrees(self) -> dict:
+        return dict(self.graph.degree)
+
     def get_n_nodes(self) -> int:
         if self.n_nodes is None:
             self.n_nodes = self.graph.number_of_nodes()
@@ -477,10 +481,27 @@ class GraphStats:
         https://ftp.ebi.ac.uk/pub/training/2025/Systems_biology_2025/Systems_biology_2025/Day_3/PhuEGO_tutorials/PhuEGO_tutorial_1/Short_tutorial_for_Systems_Biology_course_July_2025.html
         """
         if self.pagerank is None:
-            self.pagerank = nx.pagerank(
-                self.graph, weight='weight', 
-                personalization=self._get_seed_nodes_dict()
-                )
+            initial_tol = 1e-06
+
+            for _ in range(5):
+                try:
+                    self.pagerank = nx.pagerank(
+                    self.graph, weight='weight', 
+                    personalization=self._get_seed_nodes_dict(),
+                    max_iter=1000,
+                    tol=initial_tol
+                    )
+                except ZeroDivisionError as e:
+                    print(f"Could not calculate pagerank\n{e}")
+                    return None
+
+                except (np.linalg.LinAlgError, nx.AmbiguousSolution, nx.PowerIterationFailedConvergence) as e:
+                    print(f"could not calculate pagerank for tolerance: {initial_tol}")
+                    initial_tol *= 5
+                    continue
+                else:
+                    return self.pagerank
+
         return self.pagerank
     
     def get_harmonic_centrality(self) -> Dict[str, float]:

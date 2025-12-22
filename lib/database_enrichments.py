@@ -99,7 +99,7 @@ def get_decouplr_database(database_name="MSigDB", organism="human"):
     return dc.op.resource(database_name, organism=organism)
 
 
-def perform_enrichment(stats_df, enrichment_db, collection_filter=None, community_column='leiden_community'):
+def perform_enrichment(stats_df, enrichment_db, collection_filter=None, community_column='leiden_community', p_correction='bh'):
     """
     Perform hypergeometric test for enrichment of gene sets in each community.
     
@@ -179,8 +179,17 @@ def perform_enrichment(stats_df, enrichment_db, collection_filter=None, communit
         return enrichment_results
     
     # Calculate adjusted p-values (Bonferroni)
-    enrichment_results['p_adjusted'] = enrichment_results['p_value'] * len(enrichment_results)
-    enrichment_results['p_adjusted'] = enrichment_results['p_adjusted'].clip(upper=1.0)
+    if p_correction == "bonferroni":
+        enrichment_results['p_adjusted'] = enrichment_results['p_value'] * len(enrichment_results)
+        enrichment_results['p_adjusted'] = enrichment_results['p_adjusted'].clip(upper=1.0)
+    
+    ## Benjamini-Hochberg
+    elif p_correction.lower() == "bh" or p_correction.lower() == "benjamini-hochberg":
+        from scipy import stats
+        enrichment_results['p_adjusted'] = stats.false_discovery_control(enrichment_results['p_value'], method='bh')
+    
+    else:
+        raise ValueError(f"Unknown p_correction method:\n{p_correction}\nExpected: bonferroni, bh")
     
     # Add -log10(p_value) for plotting
     enrichment_results['-log10_p'] = -np.log10(enrichment_results['p_value'])
@@ -207,11 +216,15 @@ def select_top_terms(df, k=1):
     
     # Add significance marker
     top_terms['significant'] = top_terms['p_adjusted'] < 0.05
-    top_terms['display_name'] = top_terms.apply(
-        lambda x: '_'.join(x['geneset'].split('_')[1:]) + 
-                  (' *' if x['significant'] else ''), 
-        axis=1
-    )
+    def _format_display_name(row):
+        # Ensure we always return a scalar string to avoid pandas expanding into multiple columns
+        geneset = str(row['geneset'])
+        parts = geneset.split('_')
+        trimmed = '_'.join(parts[1:]) if len(parts) > 1 else geneset
+        suffix = ' *' if row['significant'] else ''
+        return f"{trimmed}{suffix}"
+
+    top_terms['display_name'] = top_terms.apply(_format_display_name, axis=1)
     
     return top_terms
 
@@ -312,7 +325,7 @@ def plot_community_graph_with_terms(G, pos, top_terms, node_to_community, edge_w
     edge_weight_attr : str
         Name of the edge attribute containing weights (default='weight')
     """
-    fig, ax = plt.subplots(figsize=(16, 12))
+    fig, ax = plt.subplots(figsize=(32, 24))
     
     # Create community color map
     communities = list(set(node_to_community.values()))

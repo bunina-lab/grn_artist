@@ -31,6 +31,7 @@ class GraphletAnalyzer:
         
         # Normalize to get Graphlet Degree Distribution (GDD) signatures
         self.signatures = None
+        self.column_mask = None  # Track which columns were kept after filtering
 
         ## Similarity matrix
         self.similarity_matrix = None # (n_node X n_node)
@@ -49,16 +50,23 @@ class GraphletAnalyzer:
 
     def preprocess_gdv_matrix(self):
         ## Filter zero columns
-        mask = self.matrix.sum(axis=0) > 0
-        fltrd_gdv_matrix = self.matrix[:, mask]
+        #mask = self.matrix.sum(axis=0) > 0
+        self.column_mask = np.ones(self.matrix.shape[1], dtype=bool) #mask  # Store which columns were kept
+        #fltrd_gdv_matrix = self.matrix[:, mask]
 
         ## Normalise graphlet counts
         def normalize_rows(X):
-            n = np.linalg.norm(X, axis=1, keepdims=True)
+            ## outputs unit vectors
+            n = np.linalg.norm(X, axis=1, keepdims=True) ##euclidean length
             return X / np.clip(n, 1e-12, None)
 
-        normalised_vector = np.log1p(normalize_rows(fltrd_gdv_matrix))
+        normalised_vector = normalize_rows(self.matrix)#np.log1p(normalize_rows(self.matrix))
         self.signatures = normalised_vector #/ normalised_vector.sum(axis=0)
+        
+        # Update graphlet_names to match filtered columns
+        #if self.graphlet_names is not None:
+        #    self.graphlet_names = [self.graphlet_names[i] for i in range(len(self.graphlet_names)) if mask[i]]
+        
         return self.signatures
 
     def _finalize_plot(self, filename):
@@ -194,7 +202,7 @@ class GraphletAnalyzer:
             kmeans = KMeans(n_clusters=n_clusters, random_state=42)
             clusters = kmeans.fit_predict(self.signatures)
             scatter = plt.scatter(projected[:, 0], projected[:, 1], 
-                                c=clusters, cmap='tab10', alpha=0.6, s=50)
+                                c=clusters, cmap='tab20', alpha=0.6, s=50)
             plt.colorbar(scatter, label='Cluster')
         else:
             plt.scatter(projected[:, 0], projected[:, 1], alpha=0.6, s=50)
@@ -272,7 +280,7 @@ class GraphletAnalyzer:
 
         # assign each cluster a color
         # matplotlib colormaps expect numeric indices, so map labels -> indices
-        cmap = plt.cm.get_cmap("tab10", len(unique_labels))
+        cmap = plt.cm.get_cmap("tab20", len(unique_labels))
         label_to_idx = {label: idx for idx, label in enumerate(unique_labels)}
         colors = {label: cmap(label_to_idx[label]) for label in unique_labels}
 

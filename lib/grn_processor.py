@@ -1,7 +1,7 @@
 from lib.grn_stats import GraphStats
 from lib.utils import write_to_json, _make_serializable, call_subprocess
 from lib.database_enrichments import process_database_enrichment
-import tempfile
+from config import ORCA_BIN
 
 import networkx as nx
 from typing import List, Literal, Tuple, Dict, Optional, Set, Union
@@ -13,21 +13,16 @@ import time
 
 
 
-##TODO: incorporate node_level output (top 10 in centrality, pagerank etc.)
-##TODO: implement z-score calcuation for different conditions (condition_1 vs condition_2)
-##TODO: basic plotting functions
-##TODO implement clusters/communities with Pathways
-
-
 class GRNArtist:
     """Main class for processing and analyzing Gene Regulatory Networks"""
     
-    def __init__(self, tsv_input, output_dir, directed=True, n_cpu=None, leiden_resolution=1.0):
+    def __init__(self, tsv_input, output_dir, directed=True, n_cpu=None, leiden_resolution=1.0, simulate=False):
         self.tsv_input = tsv_input
         self.output_dir = output_dir
         self.directed = directed
         self.n_cpu = n_cpu
         self.leiden_resolution = leiden_resolution
+        self.simulate = simulate
 
 
         self.graph: nx.Graph = None
@@ -48,6 +43,11 @@ class GRNArtist:
         self.process_grn_statistics()
         self.write_graph_stats()
         self.write_node_stats()
+        
+        if self.simulate:
+            print("Simulated graph stats finished!")
+            return None
+
         self.plot_node_stats()
         print("Processing Graphlet Degree Vector")
         self.process_graphlet_degree_vector()
@@ -66,7 +66,11 @@ class GRNArtist:
     def process_grn_statistics(self):
         ## Initialise data class
         self.graphstats_obj = GraphStats(
-            graph=self.graph, 
+            graph=self.graph if not self.simulate else nx.gnm_random_graph(
+                                                            self.graph.number_of_nodes(), 
+                                                            self.graph.number_of_edges(), 
+                                                            directed=self.directed
+                                                            ), 
             directed=self.directed,
             seed_nodes=set(self.TF_list)
             )
@@ -75,6 +79,7 @@ class GRNArtist:
 
         self.get_node_level_statistics()
         self.get_graph_level_statistics()
+        
 
 
 
@@ -86,7 +91,7 @@ class GRNArtist:
             "betweenness_centrality", "eigenvector_centrality", "pagerank", "degree_centrality", 
             "in_degree_centrality", "out_degree_centrality", "harmonic_centrality", "triangles", 
             "closeness_centrality", "eccentricity", "leiden_communities", "min_weighted_dominating_set",
-            "katz_centrality"
+            "katz_centrality", "degree", "local_efficiency", 
             ]:
             stats.pop(node_stat)
         self.graph_stats = stats
@@ -95,8 +100,8 @@ class GRNArtist:
     def get_node_level_statistics(self):
         centrality_stats_keys = [
            "betweenness_centrality", "eigenvector_centrality", "pagerank", "degree_centrality", 
-            "in_degree_centrality", "out_degree_centrality", "harmonic_centrality", "triangles", 
-            "closeness_centrality", "eccentricity", "katz_centrality" #"leiden_communities"
+            "in_degree_centrality", "out_degree_centrality", "harmonic_centrality", "triangles",
+            "closeness_centrality", "eccentricity", "katz_centrality", "local_efficiency", "degree", #"leiden_communities"
             ]
         
         node_metrics = {centrality_key:self.stats.get(centrality_key, {}) for centrality_key in centrality_stats_keys}
@@ -163,6 +168,7 @@ class GRNArtist:
             ("avg_eigenvector_centrality", gso.get_avg_eigenvector_centrality),
             ("avg_pagerank_score", gso.get_avg_pagerank_score),
             ("avg_eccentricity", gso.get_avg_eccentricity),
+            ("degree", gso.get_degrees),
             ("center", gso.get_center),
             ("diameter", gso.get_diameter),
             ("density", gso.get_density),
@@ -174,7 +180,7 @@ class GRNArtist:
             ("average_clustering_coeff", gso.get_average_clustering_coeff),
             #("large_clique_size", gso.get_large_clique_size),
             ("global_efficiency", gso.get_global_efficiency),
-            #("local_efficiency", gso.get_local_efficiency),
+            ("local_efficiency", gso.get_local_efficiency),
             ("shannon_vertex_entropy", gso.get_shannon_vertex_entropy),
             ("structural_entropy", gso.get_structural_entropy),
             ("von_neumann_entropy", gso.get_von_neumann_entropy),
@@ -184,7 +190,8 @@ class GRNArtist:
             ("proxy_criticality_branching_ratio", gso.get_proxy_criticality_branching_ratio),
             ("proxy_average_sensitivity", gso.get_proxy_average_sensitivity),
             #("sigma", gso.get_sigma),
-            #("omega", gso.get_omega)
+            #("omega", gso.get_omega),
+            ("girth", gso.get_girth)
         ]
 
 
@@ -235,10 +242,14 @@ class GRNArtist:
         from lib.paint_studio import plot_multiple_metrics
         plot_multiple_metrics(
             self.node_metrics_df, 
-            ["betweenness_centrality", "eigenvector_centrality", "pagerank", "degree_centrality", "harmonic_centrality", "closeness_centrality", "katz_centrality"], 
+            [
+                "betweenness_centrality", "eigenvector_centrality", "pagerank", 
+                "degree_centrality", "in_degree_centrality", "out_degree_centrality", 
+                "harmonic_centrality", "closeness_centrality", "katz_centrality"
+            ], 
             top_n=10, 
             ncols=2, 
-            figsize=(18, 8),
+            figsize=(18, 12),
             out_path=os.path.join(self.output_dir, "node_stats_plot.png")
             )
     
@@ -257,6 +268,14 @@ class GRNArtist:
         if "source" not in col_names or "target" not in col_names:
             raise ValueError(f"{tsv_path} file does not contain 'source' or 'target' columns")
         
+        if "weight" in col_names:
+            ## Max-min normalisation in [-1,1] range
+            from sklearn.preprocessing import maxabs_scale
+            grn_edgelist_df["weight"] = maxabs_scale(grn_edgelist_df["weight"])
+        elif "score" in col_names:
+            # Max-min normalisation in [-1,1] range
+            from sklearn.preprocessing import maxabs_scale
+            grn_edgelist_df["weight"] = maxabs_scale(grn_edgelist_df["score"])
 
         return (nx.from_pandas_edgelist(
                 grn_edgelist_df, 
@@ -273,9 +292,6 @@ class GRNArtist:
     def process_graphlet_degree_vector(self, similarity_metric:Literal["cosine", "euclidean"]="cosine"):
         from lib.graphlet_analysis import GraphletAnalyzer
 
-        import matplotlib.pyplot as plt
-        import numpy as np
-        from sklearn.cluster import AgglomerativeClustering
 
         out_dir = os.path.join(self.output_dir, "graphlet_analysis")
         gdv_matrix, node2id_map, id2node_map = self.run_orca(outdir=out_dir)
@@ -295,7 +311,13 @@ class GRNArtist:
         signature_df.index.name = "node"
         # The columns are orbits, name as G0, G1, ..., if available from graphlet_analyser
         if hasattr(graphlet_analyser, "graphlet_names") and graphlet_analyser.graphlet_names is not None:
-            signature_df.columns = graphlet_analyser.graphlet_names
+            # Ensure graphlet_names length matches signature_matrix columns
+            if len(graphlet_analyser.graphlet_names) == signature_matrix.shape[1]:
+                signature_df.columns = graphlet_analyser.graphlet_names
+            else:
+                # If lengths don't match, use default names (shouldn't happen after fix, but safety check)
+                print(f"Warning: graphlet_names length ({len(graphlet_analyser.graphlet_names)}) doesn't match signature columns ({signature_matrix.shape[1]}). Using default names.")
+                signature_df.columns = [f"G{i}" for i in range(signature_matrix.shape[1])]
         else:
             signature_df.columns = [f"G{i}" for i in range(signature_matrix.shape[1])]
         signature_df.to_csv(os.path.join(out_dir, "graphlet_signatures.tsv"), sep="\t")
@@ -347,7 +369,7 @@ class GRNArtist:
             if not tf_list:
                 continue
             tf_idx_in_matrix = [node2id_map[tf] for tf in tf_list]
-            graphlet_analyser.plot_signature_comparison(tf_idx_in_matrix, use_names=True, save_plot_name=f"Graphlet Signatures: TF Cluster {cluster_id} ({len(tf_list)} TFs)")
+            graphlet_analyser.plot_signature_comparison(tf_idx_in_matrix, use_names=True, save_plot_name=f"TF_Cluster_{cluster_id}_({len(tf_list)}_TFs)")
             # GraphletAnalyzer's plot methods already handle saving or showing
         graphlet_analyser.plot_cluster_overlay(save_plot_name="cluster_overlay.png")
         ## save signature and similarity dataframes
@@ -375,7 +397,7 @@ class GRNArtist:
         # ORCA modes: "node" for node-orbits (4- and 5-node), "edge" for edges, etc.
         # Here we ask ORCA to produce "node" counts for 4- and 5-node orbits (73 orbits).
         print("running orca")
-        call_subprocess("bin/orca", [count_on, str(graphlet_size), in_fn, out_fn])
+        call_subprocess(ORCA_BIN, [count_on, str(graphlet_size), in_fn, out_fn])
         # parse out_fn
         # ORCA outputs rows for each node, columns are orbit counts; for 5-node it returns 73 cols (or fewer if configured)
 

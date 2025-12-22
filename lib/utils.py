@@ -1,5 +1,17 @@
 import numpy as np
 import json
+import subprocess
+import os
+
+def find_files(target_dir:str, file_name:str):
+    """
+    recursively finds filenames of target and sub directories
+    """
+    path_list = call_subprocess("find", [target_dir, '-name', file_name])[1].split('\n')
+    path_list = [path_str for path_str in path_list if path_str ]
+    return path_list
+    
+
 
 def _make_serializable(obj):
     """
@@ -36,9 +48,9 @@ def write_to_json(obj, file_path):
     with open(file_path, "w") as fh:
         json.dump(obj, fh, indent=4)
 
-
-import subprocess
-import os
+def read_json(file_path):
+    with open(file_path, "r") as fh:
+        return json.load(fh)
 
 
 def call_subprocess(command: str, params: list, outfile=None, chdir=None):
