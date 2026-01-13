@@ -16,13 +16,14 @@ import time
 class GRNArtist:
     """Main class for processing and analyzing Gene Regulatory Networks"""
     
-    def __init__(self, tsv_input, output_dir, directed=True, n_cpu=None, leiden_resolution=1.0, simulate=False):
+    def __init__(self, tsv_input, output_dir, directed=True, n_cpu=None, leiden_resolution=1.0, simulate=False, organism="human"):
         self.tsv_input = tsv_input
         self.output_dir = output_dir
         self.directed = directed
         self.n_cpu = n_cpu
         self.leiden_resolution = leiden_resolution
         self.simulate = simulate
+        self.organism = organism
 
 
         self.graph: nx.Graph = None
@@ -55,7 +56,8 @@ class GRNArtist:
         process_database_enrichment(
             stats_df=self.node_metrics_df,
             graph=self.graph,
-            outdir=self.output_dir
+            outdir=self.output_dir,
+            organism=self.organism
         )
         print("Analysis happily finished!")
 
@@ -272,10 +274,14 @@ class GRNArtist:
             ## Max-min normalisation in [-1,1] range
             from sklearn.preprocessing import maxabs_scale
             grn_edgelist_df["weight"] = maxabs_scale(grn_edgelist_df["weight"])
+
+            grn_edgelist_df["abs_weight"] = abs(grn_edgelist_df["weight"])
+
         elif "score" in col_names:
             # Max-min normalisation in [-1,1] range
             from sklearn.preprocessing import maxabs_scale
             grn_edgelist_df["weight"] = maxabs_scale(grn_edgelist_df["score"])
+            grn_edgelist_df["abs_weight"] = abs(grn_edgelist_df["weight"])
 
         return (nx.from_pandas_edgelist(
                 grn_edgelist_df, 

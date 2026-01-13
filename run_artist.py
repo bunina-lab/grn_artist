@@ -40,7 +40,8 @@ def execute(args):
         tsv_input = args.edge_list_tsv,
         output_dir = out_dir,
         leiden_resolution=args.leiden_resolution,
-        simulate=args.simulate
+        simulate=args.simulate,
+        organism=args.organism
     )
     grn_obj.process_grn()
 
@@ -56,6 +57,7 @@ if __name__ == "__main__":
     parser.add_argument("-o", "--outdir", required=True, help="output directory to generate graph and GRN statistics files")
     parser.add_argument("--leiden_resolution", required=False, default=1.0, type=float, help="Resolution for leiden clustering. Default: 1")
     parser.add_argument('--simulate', required=False, action='store_true', help="Instead of calculating all stats values of given network, calculate random network based on the given network")
+    parser.add_argument('--organism', required=False, default="human", help="Organism for the network enrichment analysis. Default: human")
 
 
     args = parser.parse_args()

@@ -9,7 +9,7 @@ https://academic.oup.com/bioinformaticsadvances/article/2/1/vbac016/6544613?logi
 import decoupler as dc
 import pandas as pd
 import numpy as np
-from config import MSIG_DATABASE_KEYS
+from config import MSIG_DATABASE_KEYS, DECOUPLER_RESOURCE_DIR
 from scipy.stats import hypergeom
 import matplotlib.pyplot as plt
 import os
@@ -22,8 +22,6 @@ import networkx as nx
 ## from version 2.0.0
 ### https://decoupler.readthedocs.io/en/latest/notebooks/scell/rna_sc.html
 
-msigdb = dc.op.resource("MSigDB", organism="human")
-msigdb
 
 def calc_db_score(db, adata, tmin=5, verbose=False):
     """
@@ -70,8 +68,8 @@ def calc_db_score(db, adata, tmin=5, verbose=False):
 
 
 
-def process_database_enrichment(stats_df, graph, outdir):
-    msigdb = get_decouplr_database()
+def process_database_enrichment(stats_df, graph, outdir, organism="human"):
+    msigdb = get_decouplr_database(organism=organism)
     enriched_stats = perform_enrichment(stats_df, msigdb, collection_filter=MSIG_DATABASE_KEYS, community_column="leiden_community")
     top_enriched_df = select_top_terms(enriched_stats, k=5)
     top_enriched_df.to_csv(os.path.join(outdir, "top_5_enriched_terms.tsv"), index=False, sep="\t")
@@ -95,8 +93,14 @@ def process_database_enrichment(stats_df, graph, outdir):
 
 
     
-def get_decouplr_database(database_name="MSigDB", organism="human"):
-    return dc.op.resource(database_name, organism=organism)
+def get_decouplr_database(database_name="MSigDB", organism="human", update=False):
+    ## look decoupler resource folder
+    if os.path.exists(os.path.join(DECOUPLER_RESOURCE_DIR, f"{database_name}_{organism}.tsv")) and not update:
+        resoruce_pd = pd.read_csv(os.path.join(DECOUPLER_RESOURCE_DIR, f"{database_name}_{organism}.tsv"), sep="\t")
+    else:
+        resoruce_pd = dc.op.resource(database_name, organism=organism, verbose=True)
+        resoruce_pd.to_csv(os.path.join(DECOUPLER_RESOURCE_DIR, f"{database_name}_{organism}.tsv"), sep="\t", index=False)
+    return resoruce_pd
 
 
 def perform_enrichment(stats_df, enrichment_db, collection_filter=None, community_column='leiden_community', p_correction='bh'):

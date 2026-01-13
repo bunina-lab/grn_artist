@@ -486,7 +486,7 @@ class GraphStats:
             for _ in range(5):
                 try:
                     self.pagerank = nx.pagerank(
-                    self.graph, weight='weight', 
+                    self.graph, weight='abs_weight', 
                     personalization=self._get_seed_nodes_dict(),
                     max_iter=1000,
                     tol=initial_tol
