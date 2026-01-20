@@ -23,59 +23,30 @@ import networkx as nx
 ### https://decoupler.readthedocs.io/en/latest/notebooks/scell/rna_sc.html
 
 
-def calc_db_score(db, adata, tmin=5, verbose=False):
-    """
-    Calculates scores with different methods:
-    ora, ulm, mlm
-    Adds score_* to .obsm inplace
-    """
-    try:
-        dc.mt.mlm(adata, net=db, verbose=verbose, tmin=tmin)
-    except Exception as e:
-        print("multivariate fitting does not work:\n{error}".format(error=e))
-    dc.mt.ulm(adata, net=db, verbose=verbose, tmin=tmin)
-    dc.mt.ora(adata, net=db, verbose=verbose, tmin=tmin)
-
-## input: msigdb pandas dataframe
-#	genesymbol	collection	geneset
-#0	A1BG	reactome_pathways	REACTOME_HEMOSTASIS
-#1	A1BG	go_cellular_component	GOCC_PLATELET_ALPHA_GRANULE_LUMEN
-#2	A1BG	chemical_and_genetic_perturbations	CHENG_IMPRINTED_BY_ESTRADIOL
-#3	A1BG	immunesigdb	GSE13522_WT_VS_IFNG_KO_SKING_T_CRUZI_Y_STRAIN_...
-#4	A1BG	immunesigdb	GSE25088_CTRL_VS_IL4_AND_ROSIGLITAZONE_STIM_MA...
-#...	...	...	...
-#5895457	ZZZ3	mirna_targets_mirdb	MIR656_3P
-#5895458	ZZZ3	mirna_targets_mirdb	MIR513B_5P
-#5895459	ZZZ3	mirna_targets_mirdb	MIR449C_5P
-#5895460	ZZZ3	tf_targets_gtrf	SETD7_TARGET_GENES
-#5895461	ZZZ3	mirna_targets_mirdb	MIR4719
-#5895462 rows × 3 columns
 
 
-## input: genes with graph statistics
-#       degree_centrality	is_in_dominating_set    leiden_cluster
-#ESRRG	0.133315	True    1
-#A2M	0.000557	False   2
-#ZNF331	0.107988	True    1
-#PPARG	0.193710	True    3
-#AADACL3	0.000278	False   1
-#...	...	... 
-#ZNF563	0.000278	False   3
-#ZNF641	0.001113	False   2
-#ZNF765	0.000557	False   2
-#ZNF792	0.004453	False   2
-#ZNF821	0.002783	False   1
-
-
-
-def process_database_enrichment(stats_df, graph, outdir, organism="human"):
+def process_database_enrichment(stats_df, graph, outdir, organism="human", top_n=10):
+    ### Node enrichment
     msigdb = get_decouplr_database(organism=organism)
     enriched_stats = perform_enrichment(stats_df, msigdb, collection_filter=MSIG_DATABASE_KEYS, community_column="leiden_community")
-    top_enriched_df = select_top_terms(enriched_stats, k=5)
-    top_enriched_df.to_csv(os.path.join(outdir, "top_5_enriched_terms.tsv"), index=False, sep="\t")
+    top_enriched_df = select_top_terms(enriched_stats, k=top_n)
+    enriched_stats.to_csv(os.path.join(outdir, "enriched_terms.tsv"), index=False, sep="\t")
+    top_enriched_df.to_csv(os.path.join(outdir, f"top{top_n}_enriched_terms.tsv"), index=False, sep="\t")
+
+    ## Edge enrichment
+    collectri_db = get_collectri_db(organism)
+    edge_enrichment_df =process_edge_enrichment(collectri_db, graph)
+    edge_enrichment_df.to_csv(os.path.join(outdir, "known_edges.tsv"), sep='\t', index=False)
+
 
     node_to_community = stats_df.loc[:,"leiden_community"].astype(int).to_dict()
     agg_graph = aggregate_graph_to_communities(graph, node_to_community)
+
+
+    plot_enrichment_dotplot(
+        enrichment_df=top_enriched_df,
+        outpath=os.path.join(outdir,"terms_per_community_dotplot.png")
+    )
 
     plot_community_graph_with_terms(
         G=agg_graph, 
@@ -90,16 +61,60 @@ def process_database_enrichment(stats_df, graph, outdir, organism="human"):
         out_path=os.path.join(outdir, "enriched_terms_per_community.png")
     )
 
+    plot_graph_drawing( ## Netgraph drawing of the graph
+        G=graph,
+        enriched_df=top_enriched_df,
+        node_stats_df=stats_df,
+        outpath=os.path.join(outdir, "graph_drawing.png"),
+        edge_stats_df=edge_enrichment_df,
+        node2community=node_to_community,
+        scaling_factor=1,
+        only_significant=True,
+        n_top_comms = 4
+    )
 
+def process_edge_enrichment(db, graph):
+    edgelist_df = nx.to_pandas_edgelist(graph)
+    merged = edgelist_df.merge(db, on=["source", "target"], how="left")
+    merged["is_known_link"] = merged["references"].apply(lambda x :not pd.isna(x))
+
+    edge_attrs = {}
+    for _, row in merged.iterrows():
+        edge = (row['source'], row['target'])
+        edge_attrs[edge] = {
+            'norm_weight': row['weight'],
+            'sign': row['sign'],
+            #'resources': row['resources'],
+            'references': row['references'],
+            'sign_decision': row['sign_decision'],
+            'is_known_link': row['is_known_link']
+        }
+
+    nx.set_edge_attributes(graph, edge_attrs)
+    return merged[merged["is_known_link"]]
+
+
+
+def get_collectri_db(organism="human", update=False):
+    ## look decoupler resource folder
+    resource_path = os.path.join(DECOUPLER_RESOURCE_DIR, f"collectri_{organism}.tsv")
+    if os.path.exists(resource_path) and not update:
+        resoruce_pd = pd.read_csv(resource_path, sep="\t")
+    else:
+        resoruce_pd = dc.op.collectri(organism)
+        resoruce_pd = resoruce_pd.rename({"weight":"sign"}, axis=1)
+        resoruce_pd.to_csv(resource_path, sep="\t", index=False)
+    return resoruce_pd
 
     
 def get_decouplr_database(database_name="MSigDB", organism="human", update=False):
     ## look decoupler resource folder
-    if os.path.exists(os.path.join(DECOUPLER_RESOURCE_DIR, f"{database_name}_{organism}.tsv")) and not update:
-        resoruce_pd = pd.read_csv(os.path.join(DECOUPLER_RESOURCE_DIR, f"{database_name}_{organism}.tsv"), sep="\t")
+    resource_path = os.path.join(DECOUPLER_RESOURCE_DIR, f"{database_name}_{organism}.tsv")
+    if os.path.exists(resource_path) and not update:
+        resoruce_pd = pd.read_csv(resource_path, sep="\t")
     else:
         resoruce_pd = dc.op.resource(database_name, organism=organism, verbose=True)
-        resoruce_pd.to_csv(os.path.join(DECOUPLER_RESOURCE_DIR, f"{database_name}_{organism}.tsv"), sep="\t", index=False)
+        resoruce_pd.to_csv(resource_path, sep="\t", index=False)
     return resoruce_pd
 
 
@@ -197,6 +212,9 @@ def perform_enrichment(stats_df, enrichment_db, collection_filter=None, communit
     
     # Add -log10(p_value) for plotting
     enrichment_results['-log10_p'] = -np.log10(enrichment_results['p_value'])
+
+    ## LogFoldChange
+    enrichment_results["logFC"] = np.log(enrichment_results["fold_enrichment"])
     
     # Sort and get top N per community
     enrichment_results = enrichment_results.sort_values('p_value')
@@ -232,6 +250,27 @@ def select_top_terms(df, k=1):
     
     return top_terms
 
+def plot_enrichment_dotplot(enrichment_df, outpath, top_terms=50):
+    import matplotlib.pyplot as plt
+
+    rfig = dc.pl.dotplot(
+        df=enrichment_df[enrichment_df["significant"]], 
+        x="community", 
+        y="display_name", 
+        c="-log10_p", 
+        s="logFC", 
+        scale=0.85, 
+        top=top_terms,
+        figsize=(18,12), 
+        dpi=800, 
+        return_fig=True
+        )
+    #plt.title("Endothelial"),
+    plt.xticks(range(enrichment_df["community"].nunique()))
+    #rfig.suptitle("Endothelial")
+    plt.grid(axis = 'y')
+    rfig.savefig(outpath, dpi=rfig.dpi)
+    plt.close()
 
 def create_community_wordclouds(df, n_cols=3, out_path=None):
     """
@@ -480,3 +519,314 @@ def aggregate_graph_to_communities(graph, node_to_community):
         aggregated_graph.add_edge(comm1, comm2, weight=total_weight)
     
     return aggregated_graph
+
+def plot_graph_drawing(G, enriched_df, node_stats_df, edge_stats_df, outpath, n_top_comms=3, scaling_factor=1, node2community=None, only_significant=True):
+    ## 1st calculate which nodes to be plotted
+    ## 2nd give enrichment terms to the plot
+    ## 3rd plot with legends
+    
+    ## calculate best centralities:
+    # Define centrality attributes for cleaner checking
+    from config import CENTRALITY_COLOURS, COMMUNITY_COLOURS
+
+    node2colour = {}
+    node2size = {}
+    node2labels = {}
+    nodelabel_fontdict = {'size': 9}
+    node2community = {} if not node2community else node2community
+    node2shape = {}
+    node2alpha = {}
+
+    known_node_set = set( edge_stats_df[edge_stats_df["is_known_link"]]["source"].unique().tolist() + edge_stats_df[edge_stats_df["is_known_link"]]["target"].unique().tolist() )
+
+    ##### Community nodes ###
+    ### select most enriched communities
+    top_comms= get_top_terms_w_comms_nodes(enriched_df, k=n_top_comms)
+    top_comms
+
+
+    selected_comms = []
+    for com_dict in top_comms:
+        comm_number = com_dict["community"]
+        if comm_number not in selected_comms:
+            selected_comms.append(comm_number) 
+        for gene in com_dict["overlap_genes"]:
+            node2colour.update({gene : (COMMUNITY_COLOURS)[selected_comms.index(comm_number)%len(COMMUNITY_COLOURS)] if gene not in known_node_set else 'lime'})
+            node2size.update({gene : 1*scaling_factor if gene not in known_node_set else 1.5*scaling_factor})
+            node2alpha[gene] = 0.7
+            node2shape[gene] =  "^" if  nx.get_node_attributes(G, "is_TF")[gene] else "o"
+            node2labels[gene] = gene
+
+    
+    ### Centrality nodes ###
+    for st, clr in CENTRALITY_COLOURS.items():
+        top_central_nodes = identify_top_nodes(node_stats_df[st].to_dict(), n_top=3)
+        #print(st)
+        #print(top_central_nodes)
+        for centrl_node in top_central_nodes:
+            node2colour.update({centrl_node : clr if centrl_node not in known_node_set else "lime"})
+            node2size.update({centrl_node : 1.5*scaling_factor})
+            node2alpha[centrl_node] = 0.9
+            node2shape[centrl_node] =  "^" if nx.get_node_attributes(G, "is_TF")[centrl_node] else "o"
+            node2labels[centrl_node] = centrl_node
+    
+
+    ### Check
+    if len(node2colour.keys()) != len(node2community.keys()):### Take a subset of the node2
+        node2community = {node:comm for node, comm in node2community.items() if node in node2colour}
+
+    assert set(node2colour.keys()).difference(set(node2community.keys())) == set()
+    
+    G_sub=G.subgraph(node2colour.keys())
+
+    ### Edge stats ###
+
+    # 6. Prepare edge properties
+    edge2colors = {}
+    edge2widths = {}
+    edge2alphas = {}
+
+    for (u, v) in G_sub.edges():
+        weight = G_sub[u][v]['weight']
+        width = scaling_factor * weight*5
+        known_link = G_sub.get_edge_data(*(u,v))["is_known_link"]
+        if known_link:
+            edge2colors[(u, v)] = '#27AE60'  # Green for enriched
+            edge2widths[(u, v)] = width +0.25# 5
+            edge2alphas[(u, v)] = 0.95
+        else:
+            edge2colors[(u, v)] = '#BDC3C7'  # Light gray
+            edge2widths[(u, v)] = width #0.3
+            edge2alphas[(u, v)] = 0.6
+    
+
+    ### Plotting script ###
+    from netgraph import Graph
+    import matplotlib.pyplot as plt
+    # Create figure
+    fig, ax = plt.subplots(figsize=(36, 36), facecolor='white', dpi=800)
+
+    # Draw network using netgraph
+    plot_instance = Graph(
+        G_sub,
+        node_color=node2colour,
+        node_size=node2size,
+        node_labels=node2labels,
+        node_label_fontdict=nodelabel_fontdict,
+        node_edge_width=0,
+        edge_color=edge2colors,
+        edge_width=edge2widths,
+        arrows=True,
+        ax=ax,
+        node_shape=node2shape,
+        node_alpha=node2alpha,
+        node_layout='community', node_layout_kwargs=dict(node_to_community=node2community),
+        edge_layout='bundled', edge_layout_kwargs=dict(k=2000),
+    )
+
+
+    add_community_terms_to_plot(ax, plot_instance, enriched_df, node2community, only_significant=only_significant)
+
+    # Create legend
+    from matplotlib.patches import Patch
+
+    legend_elements = [
+        Patch(facecolor=color, label=key.replace('top_', '').replace('_', ' ').title())
+        for key, color in CENTRALITY_COLOURS.items()
+    ]
+
+    # Add title
+    ax.set_title('Community Graph with Enriched Gene Sets\n(* indicates significant enrichment)', 
+                fontsize=16, fontweight='bold', pad=20)
+
+    plt.legend(handles=legend_elements, loc='upper left', bbox_to_anchor=(1, 1), 
+            title='Top Centrality Nodes', fontsize=10)
+    plt.tight_layout()
+    plt.savefig(outpath)
+    
+
+
+
+def identify_top_nodes(centrality_dict, n_top=3, method='zscore', threshold=2.0):
+
+    """
+    Identify top N nodes that are also statistically significant from the distribution.
+    
+    Parameters:
+    -----------
+    centrality_dict : dict
+        Dictionary mapping node -> centrality value
+    n_top : int
+        Number of top nodes to consider (default 3)
+    method : str
+        'zscore' - use z-score threshold (default)
+        'iqr' - use interquartile range (outliers)
+        'percentile' - use top percentile
+        'none' - just take top N without statistical test
+    threshold : float
+        For zscore: standard deviations above mean (default 2.0)
+        For iqr: multiplier for IQR (default 1.5)
+        For percentile: percentile cutoff (default 95)
+    
+    Returns:
+    --------
+    list : top N nodes that pass statistical significance test (may be < n_top)
+    """
+    if not centrality_dict or len(centrality_dict) == 0:
+        return []
+    
+    values = np.array(list(centrality_dict.values()))
+    nodes = list(centrality_dict.keys())
+    
+    # Get top N nodes by value
+    sorted_indices = np.argsort(values)[::-1]
+    top_n_indices = sorted_indices[:min(n_top, len(nodes))]
+    top_n_nodes = [nodes[i] for i in top_n_indices]
+    top_n_values = values[top_n_indices]
+    
+    if method == 'none':
+        # Just return top N without statistical test
+        return top_n_nodes
+    
+    # Now check which of the top N are statistically significant
+    significant_nodes = []
+    
+    if method == 'zscore':
+        # Z-score method: check if top N values are > threshold std devs above mean
+        mean = np.mean(values)
+        std = np.std(values)
+        
+        if std > 0:
+            for i, node in enumerate(top_n_nodes):
+                z_score = (top_n_values[i] - mean) / std
+                if z_score > threshold:
+                    significant_nodes.append(node)
+    
+    elif method == 'iqr':
+        # IQR method: check if top N values are beyond Q3 + threshold * IQR
+        q1 = np.percentile(values, 25)
+        q3 = np.percentile(values, 75)
+        iqr = q3 - q1
+        upper_bound = q3 + threshold * iqr
+        
+        for i, node in enumerate(top_n_nodes):
+            if top_n_values[i] > upper_bound:
+                significant_nodes.append(node)
+    
+    elif method == 'percentile':
+        # Percentile method: check if top N values are above the percentile cutoff
+        cutoff = np.percentile(values, threshold)
+        
+        for i, node in enumerate(top_n_nodes):
+            if top_n_values[i] > cutoff:
+                significant_nodes.append(node)
+    
+    return significant_nodes
+
+
+def get_top_terms_w_comms_nodes(df, k=5):
+    """ Outputs:
+    [{'community': 10,
+  'overlap_genes': ['ATF3', 'EGR1', 'FOS', 'FOSB', 'JUN', 'NR4A2'],
+  'geneset': 'HALLMARK_TNFA_SIGNALING_VIA_NFKB'},
+ {'community': 10,
+  'overlap_genes': ['ATF3', 'EGR1', 'FOS', 'FOSB', 'JUN', 'NR4A2'],
+  'geneset': 'GOMF_DNA_BINDING_TRANSCRIPTION_ACTIVATOR_ACTIVITY'},
+ {'community': 10,
+  'overlap_genes': ['FOS', 'JUN'],
+  'geneset': 'REACTOME_ACTIVATION_OF_THE_AP_1_FAMILY_OF_TRANSCRIPTION_FACTORS'},
+ {'community': 10,... ]
+    """
+    fltrd_grph = df[df["significant"]]
+    community_summary = fltrd_grph.loc[fltrd_grph.groupby('community')['logFC'].idxmax()]
+    top_comms = community_summary.sort_values(['logFC'], ascending=[False]).head(k)["community"].tolist()
+    comm2node_dict = []
+
+    for top_com in top_comms:
+        mask = df["community"] == top_com
+        for _, irow in df[mask][["community", "overlap_genes", "geneset"]].iterrows():
+            # Split by comma and strip whitespace
+            comm2node_dict.append({
+                "community":top_com,
+                "overlap_genes":[gene.strip() for gene in irow["overlap_genes"].split(",")],
+                "geneset": irow["geneset"]
+            })
+    return comm2node_dict
+
+
+def add_community_terms_to_plot(ax, plot_instance, top_terms, node_to_community, community_colors=None, only_significant=False):
+    """
+    Add enriched term labels to a netgraph plot based on communities
+    
+    Parameters:
+    -----------
+    ax : matplotlib.axes.Axes
+        The axes object with the plot
+    plot_instance : netgraph.Graph
+        The netgraph Graph instance
+    top_terms : pd.DataFrame
+        DataFrame with top terms per community (columns: 'community', 'geneset', 'significant', etc.)
+    node_to_community : dict
+        Mapping of nodes to their community assignments
+    """
+    from config import COMMUNITY_COLOURS
+
+    community_colors = COMMUNITY_COLOURS if community_colors is None else community_colors
+    # Get node positions from the netgraph instance
+    node_positions = plot_instance.node_positions
+    
+    # Calculate community centroids
+    communities = list(set(node_to_community.values()))
+    
+    community_positions = {}
+    for comm in communities:
+        comm_nodes = [node for node, c in node_to_community.items() if c == comm]
+        if comm_nodes:
+            x_coords = [node_positions[node][0] for node in comm_nodes]
+            y_coords = [node_positions[node][1] for node in comm_nodes]
+            centroid = (np.mean(x_coords), np.mean(y_coords))
+            community_positions[comm] = centroid
+
+    
+    # Add term labels
+    # Ensure top_terms is a DataFrame and contains 'community' column.
+    comm_col='community'
+    if not isinstance(top_terms, pd.DataFrame):
+        raise TypeError(f"top_terms must be a pandas DataFrame, but got {type(top_terms)}")
+    if comm_col not in top_terms.columns:
+        raise KeyError(
+            f"{comm_col} column not found in top_terms DataFrame in add_community_terms_to_plot. "
+            f"Available columns: {list(top_terms.columns)}"
+        )
+    community_terms = top_terms.groupby(comm_col)
+    
+    for comm, group in community_terms:
+        if comm in community_positions:
+            cx, cy = community_positions[comm]
+            n_terms = len(group)
+            
+            # Place terms in a circle around the centroid
+            for idx, (_, row) in enumerate(group.iterrows()):
+                if only_significant and not row['significant']: 
+                    continue
+                angle = 2 * np.pi * idx / n_terms
+                radius = 0.075  # Adjust this to control distance from centroid
+                x_offset = cx + radius * np.cos(angle)
+                y_offset = cy + radius * np.sin(angle)
+                
+                # Format the label
+                term_name = "_".join(row['geneset'].split("_")[1:])
+                term_name = term_name.title()[:35]  # Limit length
+                if row['significant']:
+                    term_name += ' *'
+                
+                # Add text with background
+                ax.text(x_offset, y_offset, term_name, 
+                       fontsize=10 if n_terms > 2 else 12,
+                       fontweight='bold' if row['significant'] else 'normal',
+                       ha='center', va='center',
+                       bbox=dict(boxstyle='round,pad=0.4', 
+                                facecolor=community_colors[communities.index(comm)%len(community_colors)], 
+                                edgecolor='black', 
+                                alpha=0.6),
+                       zorder=1000) 

@@ -10,58 +10,6 @@ import os
 from lib.utils import find_files, read_json, write_to_json
 
 
-graph_stat_dict = {
-    "n_edges": 18094,
-    "n_nodes": 3250,
-    "avg_in_degree": 5.567384615384616,
-    "avg_out_degree": 5.567384615384616,
-    "avg_degree": 5.567384615384616,
-    "avg_closeness_centrality": 0.007697892281183726,
-    "avg_degree_centrality": 0.0034271373440348508,
-    "avg_betweenness_centrality": 2.05851662055693e-05,
-    "avg_eigenvector_centrality": 0.003359344258370834,
-    "avg_pagerank_score": 0.00030769230769230765,
-    #"avg_eccentricity": null,
-    #"center": null,
-    #"diameter": null,
-    "density": 0.0017135686720174254,
-    "transitivity": 0.004821173816396271,
-    "n_isolate_subgraphs": 0,
-    "n_triangles": 70311,
-    "degree_assortativity": 0.0052844743488639385,
-    "degree_centralization": 0.17144863855166365,
-    "average_clustering_coeff": 0.30196834261297684,
-    "global_efficiency": 0.3770600500641707,
-    "shannon_vertex_entropy": 3.9588117291122993,
-    "structural_entropy": 17.110824698423933,
-    "von_neumann_entropy": 11.665228625306177,
-    "shannon_degree_centrality_entropy": 9.555412349212013,
-    "shannon_betweenness_centrality_entropy": 5.425971216086762,
-    "shannon_pagerank_centrality_entropy": 9.213773173739723,
-    "proxy_criticality_branching_ratio": 5.567384615384616,
-    "proxy_average_sensitivity": 1.391846153846154,
-    "undireced_n_egdes": 18043,
-    "n_self_loops": 43,
-    "n_communities": 12
-}
-
-
-def calc_two_tailed_p(z_score):
-    return 2 * (1- stats.norm.cdf((z_score)))
-
-def compare_pagerank():
-    from scipy.stats import ks_2samp
-
-    # Compare PageRank distributions between two networks
-    pr1 = list(nx.pagerank(G1).values())
-    pr2 = list(nx.pagerank(G2).values())
-
-    statistic, p_value = ks_2samp(pr1, pr2)
-
-def compare_stats_to_null_model_stats(observed_stats, *null_stats, p_alpha=0.05):
-    num_metrics = ...
-
-
 def compare_to_null_model(G, metric_func, n_simulations=1000):
     """Compare network metric to random null model"""
     
@@ -117,7 +65,7 @@ class GraphMetricsComparator:
         for json_file in graph_stats_jsons:
             sim_stats_dict = read_json(json_file)
             for key, value in sim_stats_dict.items():
-                if key in sim_dist_dict:
+                if key in sim_dist_dict and value is not None:
                     sim_dist_dict[key].append(value)
         self.simulations_dist_dict = sim_dist_dict
         return sim_dist_dict
@@ -412,7 +360,6 @@ class GDV_compare:
         term = np.abs(u_log - v_log) / denom
         #return term
         return np.mean(term)
-
 
 class CentralityMetricsComparator:
     """Compare centrality metrics between two networks and identify significant changes."""
@@ -874,3 +821,131 @@ class CentralityMetricsComparator:
             plt.close()
         else:
             plt.show()
+    
+    def plot_centrality_heatmap(self, results_dict: Dict[str, pd.DataFrame], 
+                           significance_level=0.05, filter_nonsignificant_nodes=True, 
+                           figsize=None, save=None):
+        """
+        Create heatmap of z-score changes across all metrics and nodes.
+        
+        Parameters:
+        -----------
+        results_dict : Dict[str, pd.DataFrame]
+            Dictionary with metric names as keys and comparison DataFrames as values
+        significance_level : float
+            P-value threshold for marking significance (default: 0.05)
+        filter_nonsignificant_nodes : bool
+            If True, exclude nodes that have no significant metrics (default: True)
+        figsize : tuple
+            Figure size (width, height). Auto-calculated if None
+        save : str
+            Path to save figure. If None, displays the plot
+        """
+        import pandas as pd
+        import seaborn as sns
+        import matplotlib.pyplot as plt
+        
+        # Combine all metrics into single dataframe
+        all_data = []
+        for metric, df in results_dict.items():
+            for _, row in df.iterrows():
+                all_data.append({
+                    'node': row['node'],
+                    'metric': metric,
+                    'z_diff': row['z_diff'],
+                    'p_value': row.get('p_value', None)  # Get p_value if it exists
+                })
+        
+        df_combined = pd.DataFrame(all_data)
+        if save:
+            df_combined.to_csv(save.replace("png", "tsv"), sep="\t")
+        
+        # Pivot for heatmap: rows=metrics, columns=nodes, values=z_diff
+        heatmap_data = df_combined.pivot(index='metric', columns='node', values='z_diff')
+        
+        # Create significance mask based on p-value
+        p_value_data = df_combined.pivot(index='metric', columns='node', values='p_value')
+        significance_mask = p_value_data < significance_level
+        
+        # Filter out nodes with no significant metrics
+        if filter_nonsignificant_nodes:
+            # Get nodes that have at least one significant metric
+            nodes_with_significance = significance_mask.any(axis=0)
+            significant_nodes = nodes_with_significance[nodes_with_significance].index.tolist()
+            
+            if len(significant_nodes) == 0:
+                print(f"Warning: No nodes have significant metrics at p < {significance_level}")
+                # Keep all nodes if none are significant
+            else:
+                # Filter both heatmap data and p-value data
+                heatmap_data = heatmap_data[significant_nodes]
+                p_value_data = p_value_data[significant_nodes]
+                significance_mask = significance_mask[significant_nodes]
+                print(f"Displaying {len(significant_nodes)} nodes with at least one significant metric "
+                    f"(filtered out {len(nodes_with_significance) - len(significant_nodes)} nodes)")
+        
+        # Auto-calculate figure size if not provided
+        if figsize is None:
+            n_nodes = len(heatmap_data.columns)
+            n_metrics = len(heatmap_data.index)
+            figsize = (max(12, n_nodes * 0.5), max(6, n_metrics * 0.6))
+        
+        # Get network names
+        first_df = list(results_dict.values())[0]
+        name1 = first_df['network1_name'].iloc[0] if 'network1_name' in first_df.columns else "Network 1"
+        name2 = first_df['network2_name'].iloc[0] if 'network2_name' in first_df.columns else "Network 2"
+        
+        # Create figure
+        fig, ax = plt.subplots(figsize=figsize)
+        
+        # Create heatmap
+        sns.heatmap(
+            heatmap_data,
+            cmap='RdBu_r',  # Red for positive, Blue for negative
+            center=0,
+            annot=False,
+            cbar_kws={'label': 'Z-score Change (z_diff)', 'shrink': 0.8},
+            ax=ax,
+            vmin=-abs(heatmap_data.values[~pd.isna(heatmap_data.values)]).max() if heatmap_data.notna().any().any() else -3,
+            vmax=abs(heatmap_data.values[~pd.isna(heatmap_data.values)]).max() if heatmap_data.notna().any().any() else 3
+        )
+        
+        # Add stars for significant changes (p < significance_level)
+        for i, metric in enumerate(heatmap_data.index):
+            for j, node in enumerate(heatmap_data.columns):
+                if pd.notna(p_value_data.loc[metric, node]) and significance_mask.loc[metric, node]:
+                    ax.text(j + 0.5, i + 0.5, '*', 
+                        ha='center', va='center',
+                        color='black', fontsize=16, fontweight='bold')
+        
+        # Add direction labels to colorbar
+        cbar = ax.collections[0].colorbar
+        cbar.ax.text(1.7, 0.99, f'{name2}', 
+                    transform=cbar.ax.transAxes,
+                    ha='left', va='top', fontsize=9, color='darkred', 
+                    fontweight='bold', rotation=0)
+        cbar.ax.text(1.7, 0.01, f'{name1}', 
+                    transform=cbar.ax.transAxes,
+                    ha='left', va='bottom', fontsize=9, color='darkblue', 
+                    fontweight='bold', rotation=0)
+
+        # Labels and title
+        ax.set_xlabel('Nodes', fontsize=12, fontweight='bold')
+        ax.set_ylabel('Centrality Metrics', fontsize=12, fontweight='bold')
+        
+        title_suffix = "\n(showing only nodes with significant changes)" if filter_nonsignificant_nodes else ""
+        ax.set_title(f'Centrality Z-score Changes: {name1} vs {name2}\n(* = p < {significance_level}){title_suffix}', 
+                    fontsize=14, fontweight='bold', pad=20)
+        
+        ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha='right', fontsize=10)
+        ax.set_yticklabels(ax.get_yticklabels(), rotation=0, fontsize=10)
+        
+        plt.tight_layout()
+        
+        if save:
+            plt.savefig(save, dpi=800, bbox_inches='tight')
+            plt.close()
+        else:
+            plt.show()
+        
+        return fig

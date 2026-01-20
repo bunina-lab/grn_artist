@@ -50,8 +50,9 @@ class GRNArtist:
             return None
 
         self.plot_node_stats()
-        print("Processing Graphlet Degree Vector")
-        self.process_graphlet_degree_vector()
+        self.populate_nodes()
+
+
         print("Database Enrichment")
         process_database_enrichment(
             stats_df=self.node_metrics_df,
@@ -59,8 +60,16 @@ class GRNArtist:
             outdir=self.output_dir,
             organism=self.organism
         )
+
+        print("saving the graph")
+        self.save_graph()
+
+        print("Processing Graphlet Degree Vector")
+        self.process_graphlet_degree_vector()
+
         print("Analysis happily finished!")
 
+        
     def initialise_graph(self):
         self.graph, self.TF_list = self.read_from_tsv_edge_list(self.tsv_input, self.directed)
         self.stats = {}
@@ -82,6 +91,7 @@ class GRNArtist:
         self.get_node_level_statistics()
         self.get_graph_level_statistics()
         
+        nx.set_node_attributes(self.graph, {node: (node in self.TF_list) for node in self.graph.nodes}, "is_TF")
 
 
 
@@ -107,19 +117,12 @@ class GRNArtist:
             ]
         
         node_metrics = {centrality_key:self.stats.get(centrality_key, {}) for centrality_key in centrality_stats_keys}
-        #node_metrics.update(self.stats["betweenness_centrality"])
-        #node_metrics.update(self.stats["eigenvector_centrality"])
-        #node_metrics.update(self.stats["pagerank"])
-        #node_metrics.update(self.stats["degree_centrality"])
-        #node_metrics.update(self.stats["in_degree_centrality"])
-        #node_metrics.update(self.stats["out_degree_centrality"])
-        #node_metrics.update(self.stats["harmonic_centrality"])
-        #node_metrics.update(self.stats["triangles"])
-        #node_metrics.update(self.stats["closeness_centrality"])
-        #node_metrics.update(self.stats["eccentricity"])
         node_metrics_df = pd.DataFrame(node_metrics)
 
         node_metrics_df["is_in_dominating_set"] = node_metrics_df.index.isin(self.stats["min_weighted_dominating_set"])
+        node_metrics["is_in_center"] = node_metrics_df.index.isin(self.stats["center"])
+        node_metrics["is_in_max_strong_component_subgraph"] = node_metrics_df.index.isin(self.stats["largest_strongly_connected_component"])
+        node_metrics["is_TF"] = node_metrics_df.index.isin(self.TF_list)
         
         leiden_communities = self.stats["leiden_communities"] #[{2, 3, 5, 7, 8}, {0, 1, 4, 6, 9}] ## community list of sets
         
@@ -127,7 +130,6 @@ class GRNArtist:
             node_metrics_df.loc[list(community_set), "leiden_community"] = community_idx
         
         #node_metrics_df["n_targets"] = node_metrics_df.index.to_series().apply(lambda x: self.graphstats_obj.query_n_descendants(x))
-
 
         self.node_metrics_df = node_metrics_df
         return self.node_metrics_df
@@ -193,7 +195,8 @@ class GRNArtist:
             ("proxy_average_sensitivity", gso.get_proxy_average_sensitivity),
             #("sigma", gso.get_sigma),
             #("omega", gso.get_omega),
-            ("girth", gso.get_girth)
+            ("girth", gso.get_girth),
+            ("largest_strongly_connected_component", gso.get_largest_strongly_connected_component)
         ]
 
 
@@ -282,6 +285,10 @@ class GRNArtist:
             from sklearn.preprocessing import maxabs_scale
             grn_edgelist_df["weight"] = maxabs_scale(grn_edgelist_df["score"])
             grn_edgelist_df["abs_weight"] = abs(grn_edgelist_df["weight"])
+        
+        else:
+            grn_edgelist_df["weight"] = 1
+            grn_edgelist_df["abs_weight"] = 1
 
         return (nx.from_pandas_edgelist(
                 grn_edgelist_df, 
@@ -445,5 +452,16 @@ class GRNArtist:
         return mapping
 
     
+    def populate_nodes(self):
+        if self.graph is None or self.node_metrics_df is None:
+            raise ValueError("node_metrics_df or graph not properly initiated!")
+            
+        for metric in self.node_metrics_df.columns:
+            values_dict = self.node_metrics_df[metric].to_dict()
+            nx.set_node_attributes(self.graph, values=values_dict, name=metric)
 
-    
+    def save_graph(self):
+        ##Saves graph with cytoscape annotation format
+        import json
+        with open(os.path.join(self.output_dir, "annotated_graph.json"), "w") as fh:
+            json.dump(nx.cytoscape_data(self.graph), fh, indent=4)

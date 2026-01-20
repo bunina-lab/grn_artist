@@ -54,6 +54,7 @@ class GraphStats:
     n_isolate_subgraphs: Optional[int] = None
     triangles: Optional[Dict[str, int]] = None
     n_triangles: Optional[int] = None
+    largest_strongly_connected_component: Optional[Set[int]] = None
 
     
     # Centrality statistics
@@ -178,6 +179,9 @@ class GraphStats:
         """
         if self.girth is None:
             g = self.graph.to_undirected() if self.directed else self.graph
+            # Drop self loops (self cycles) for girth calculation
+            g = g.copy()
+            g.remove_edges_from(nx.selfloop_edges(g))
             self.girth = nx.girth(g)
         return self.girth
     
@@ -517,26 +521,36 @@ class GraphStats:
     def get_eccentricity(self) -> Optional[Dict[str, float]]:
         """
         The eccentricity of a node v is the maximum distance from v to all other nodes in G.
+        If the graph is not strongly connected, uses largest strongly connected component
         """
         if self.eccentricity is None:
             if not nx.is_strongly_connected(self.graph):
-                self.eccentricity = None
+                component = self.get_largest_strongly_connected_component()
+                subgraph = self.graph.subgraph(component)
+                self.eccentricity = nx.eccentricity(subgraph, weight="weight")
             else:
-                self.eccentricity = nx.eccentricity(self.graph)
+                self.eccentricity = nx.eccentricity(self.graph, weight="weight")
         return self.eccentricity
     
+    def get_largest_strongly_connected_component(self):
+        if self.largest_strongly_connected_component is None:
+            self.largest_strongly_connected_component = max(nx.strongly_connected_components(self.graph), key=len)
+        return self.largest_strongly_connected_component
+
     def get_center(self) -> Optional[List[str]]:
         """
         Returns the center of the graph G.
 
         The center is the set of nodes with eccentricity equal to radius.
+        https://networkx.org/documentation/stable/reference/algorithms/generated/networkx.algorithms.distance_measures.center.html
+
         """
         if self.center is None:
             eccentricity = self.get_eccentricity()
             if eccentricity is None:
                 self.center = None
             else:
-                self.center = nx.center(self.graph, e=eccentricity)
+                self.center = nx.center(self.graph, e=eccentricity, weight="weight")
         return self.center
     
     def get_diameter(self) -> Optional[float]:
@@ -548,7 +562,7 @@ class GraphStats:
             if eccentricity is None:
                 self.diameter = None
             else:
-                self.diameter = float(nx.diameter(self.graph, e=eccentricity))
+                self.diameter = float(nx.diameter(self.graph, e=eccentricity, weight="weight"))
         return self.diameter
     
     def get_min_weighted_dominating_set(self) -> Set[str]:

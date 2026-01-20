@@ -4,6 +4,7 @@ def execute(args):
     from lib.compare_grn import CentralityMetricsComparator
     import pandas as pd
     import os
+    import json
 
     ## Expects df to have genes on the index (1st column)
     df_con1 = pd.read_csv(args.condition_1, sep="\t", index_col=0)
@@ -26,12 +27,22 @@ def execute(args):
     print("="*80)
     
     results = comparator.find_all_significant_changes(
-        top_n=10,
+        top_n=50,
         n_permutations=1000
     )
     
     # Visualize
     comparator.visualize_all_metrics(results, top_n=10, save=os.path.join(args.outdir, "centrality_stats_comparison.png"))
+    comparator.plot_centrality_heatmap(results, significance_level=0.01, save=os.path.join(args.outdir, "centrality_stats_heatmap.png"))
+    
+    # Optionally: Write Jaccard index to a results file if desired
+    with open(os.path.join(args.out_dir, "jaccard_index.json"), "w") as f:
+        jaccard_out = {
+            "network_1": args.name1,
+            "network_2": args.name2,
+            "jaccard_index": comparator.jaccard_index
+            }
+        json.dump(jaccard_out, f, indent=4)
 
     if args.gdv_signature_1 and args.gdv_signature_2:
         from lib.compare_grn import GDV_compare
