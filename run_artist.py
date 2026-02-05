@@ -1,4 +1,3 @@
-from ast import arg
 import os
 import time
 
@@ -22,8 +21,7 @@ def execute(args):
         os.environ["NX_CUGRAPH_AUTOCONFIG"] = "True"
         os.environ["NETWORKX_BACKEND_PRIORITY"]="cugraph"
 
-    if not os.path.exists(args.outdir):
-        os.mkdir(args.outdir)
+    os.makedirs(args.outdir, exist_ok=True)
 
     out_dir = args.outdir
 

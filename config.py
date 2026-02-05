@@ -32,17 +32,20 @@ BASE_DIR = os.path.dirname(os.path.realpath(__file__))
 ORCA_BIN = os.path.join(BASE_DIR, "bin", "orca")
 
 DECOUPLER_RESOURCE_DIR = os.path.join(BASE_DIR, "resources", "decoupler")
+REACTOME_RESOURCE_DIR = os.path.join(BASE_DIR, "resources", "reactome")
+GO_RESOURCE_DIR = os.path.join(BASE_DIR, "resources", "go")
+GO_OBO_FILE=os.path.join(GO_RESOURCE_DIR,"go-basic.obo")
 
 CENTRALITY_COLOURS = {
     "betweenness_centrality": "#FF0000",      # Pure Red
-    "eigenvector_centrality": "#DC143C",     # Crimson
-    "pagerank": "#B22222",                   # Firebrick
+    "eigenvector_centrality": "darkmagenta",     # 
+    "pagerank": "gold",                   #
     "degree_centrality": "#8B0000",          # Dark Red
     "in_degree_centrality": "#FF1493",       # Deep Pink (red-pink)
     "out_degree_centrality": "#C71585",      # Medium Violet Red (red-violet)
-    "harmonic_centrality": "#D32F2F",        # Material Red 700
+    "harmonic_centrality": "darkslategrey",        # 
     "closeness_centrality": "#E53935",       # Material Red 600
-    "katz_centrality": "#F44336",            # Material Red 500
+    "katz_centrality": "slateblue",
     #"local_efficiency": "#EF5350",           # Material Red 400
 }
 
@@ -50,7 +53,7 @@ CENTRALITY_COLOURS = {
 COMMUNITY_COLOURS = [
     '#FF6B6B',  # Red
     '#4ECDC4',  # Teal
-    '#95E1D3',  # Mint
+    'ivory', 
     "Cyan",
     "Yellow",
     "Royalblue",

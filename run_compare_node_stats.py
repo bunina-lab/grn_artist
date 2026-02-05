@@ -33,10 +33,14 @@ def execute(args):
     
     # Visualize
     comparator.visualize_all_metrics(results, top_n=10, save=os.path.join(args.outdir, "centrality_stats_comparison.png"))
-    comparator.plot_centrality_heatmap(results, significance_level=0.01, save=os.path.join(args.outdir, "centrality_stats_heatmap.png"))
+    comparator.plot_centrality_heatmap(results, 
+    significance_level=0.01, 
+    save=os.path.join(args.outdir, "centrality_stats_heatmap.png"), 
+    filter_nonsignificant_nodes=True
+    )
     
     # Optionally: Write Jaccard index to a results file if desired
-    with open(os.path.join(args.out_dir, "jaccard_index.json"), "w") as f:
+    with open(os.path.join(args.outdir, "jaccard_index.json"), "w") as f:
         jaccard_out = {
             "network_1": args.name1,
             "network_2": args.name2,

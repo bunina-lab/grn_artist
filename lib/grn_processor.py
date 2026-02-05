@@ -277,7 +277,6 @@ class GRNArtist:
             ## Max-min normalisation in [-1,1] range
             from sklearn.preprocessing import maxabs_scale
             grn_edgelist_df["weight"] = maxabs_scale(grn_edgelist_df["weight"])
-
             grn_edgelist_df["abs_weight"] = abs(grn_edgelist_df["weight"])
 
         elif "score" in col_names:

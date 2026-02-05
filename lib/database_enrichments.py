@@ -43,10 +43,11 @@ def process_database_enrichment(stats_df, graph, outdir, organism="human", top_n
     agg_graph = aggregate_graph_to_communities(graph, node_to_community)
 
 
-    plot_enrichment_dotplot(
-        enrichment_df=top_enriched_df,
-        outpath=os.path.join(outdir,"terms_per_community_dotplot.png")
-    )
+    if any(top_enriched_df["significant"]):
+        plot_enrichment_dotplot(
+            enrichment_df=top_enriched_df,
+            outpath=os.path.join(outdir,"terms_per_community_dotplot.png")
+        )
 
     plot_community_graph_with_terms(
         G=agg_graph, 
@@ -68,9 +69,9 @@ def process_database_enrichment(stats_df, graph, outdir, organism="human", top_n
         outpath=os.path.join(outdir, "graph_drawing.png"),
         edge_stats_df=edge_enrichment_df,
         node2community=node_to_community,
-        scaling_factor=1,
+        scaling_factor=1.2,
         only_significant=True,
-        n_top_comms = 4
+        n_top_comms = 5
     )
 
 def process_edge_enrichment(db, graph):
@@ -265,6 +266,8 @@ def plot_enrichment_dotplot(enrichment_df, outpath, top_terms=50):
         dpi=800, 
         return_fig=True
         )
+    # Set the colorbar colormap to 'Reds' ## no, berlin is better
+    rfig.axes[0].collections[0].colorbar.ax.collections[0].set_cmap('berlin')
     #plt.title("Endothelial"),
     plt.xticks(range(enrichment_df["community"].nunique()))
     #rfig.suptitle("Endothelial")
@@ -319,16 +322,40 @@ def create_community_wordclouds(df, n_cols=3, out_path=None):
             word_freq[term] = row['fold_enrichment']
         
         if word_freq:
-            # Create word cloud
-            wordcloud = WordCloud(width=800, height=600, 
-                                 background_color='white',
-                                 colormap='viridis',
-                                 relative_scaling=0.5,
-                                 min_font_size=8).generate_from_frequencies(word_freq)
+            # SOLUTION 1: Limit number of terms (top 50 by fold_enrichment)
+            if len(word_freq) > 50:
+                word_freq = dict(sorted(word_freq.items(), 
+                                      key=lambda x: x[1], 
+                                      reverse=True)[:50])
             
-            ax.imshow(wordcloud, interpolation='bilinear')
-            ax.set_title(f'Community {comm}\n({len(comm_terms)} significant terms)', 
-                        fontsize=12, fontweight='bold')
+            # SOLUTION 2: Increase canvas size and adjust parameters
+            try:
+                wordcloud = WordCloud(
+                    width=1600,  # Increased from 800
+                    height=1200,  # Increased from 600
+                    background_color='white',
+                    colormap='viridis',
+                    relative_scaling=0.5,
+                    min_font_size=6,  # Reduced from 8
+                    max_font_size=100,  # Add max font size
+                    max_words=100,  # Limit total words
+                    collocations=False,  # Prevent word repetition
+                    prefer_horizontal=0.7  # More horizontal words fit better
+                ).generate_from_frequencies(word_freq)
+                
+                ax.imshow(wordcloud, interpolation='bilinear')
+                ax.set_title(f'Community {comm}\n({len(comm_terms)} significant terms)', 
+                            fontsize=12, fontweight='bold')
+            except ValueError as e:
+                # SOLUTION 3: Fallback - if still fails, show top terms as text
+                print(f"Warning: Could not generate wordcloud for community {comm}: {e}")
+                top_terms = sorted(word_freq.items(), key=lambda x: x[1], reverse=True)[:10]
+                text = "\n".join([f"{term}" for term, _ in top_terms])
+                ax.text(0.5, 0.5, text, 
+                       ha='center', va='center', fontsize=10,
+                       bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+                ax.set_title(f'Community {comm}\n({len(comm_terms)} significant terms)\n[Top 10 shown]', 
+                            fontsize=12, fontweight='bold')
         else:
             ax.text(0.5, 0.5, 'No significant terms', 
                    ha='center', va='center', fontsize=12)
@@ -345,7 +372,7 @@ def create_community_wordclouds(df, n_cols=3, out_path=None):
     plt.tight_layout()
 
     if out_path:
-        plt.savefig(out_path)
+        plt.savefig(out_path, dpi=600, bbox_inches='tight')
         plt.close()
     else:
         plt.show()
@@ -546,17 +573,26 @@ def plot_graph_drawing(G, enriched_df, node_stats_df, edge_stats_df, outpath, n_
 
 
     selected_comms = []
+    comm2enriched_terms = {}
+
     for com_dict in top_comms:
         comm_number = com_dict["community"]
         if comm_number not in selected_comms:
             selected_comms.append(comm_number) 
         for gene in com_dict["overlap_genes"]:
-            node2colour.update({gene : (COMMUNITY_COLOURS)[selected_comms.index(comm_number)%len(COMMUNITY_COLOURS)] if gene not in known_node_set else 'lime'})
+            node2colour.update({gene : COMMUNITY_COLOURS[selected_comms.index(comm_number)%len(COMMUNITY_COLOURS)] if gene not in known_node_set else 'lime'})
             node2size.update({gene : 1*scaling_factor if gene not in known_node_set else 1.5*scaling_factor})
             node2alpha[gene] = 0.7
             node2shape[gene] =  "^" if  nx.get_node_attributes(G, "is_TF")[gene] else "o"
             node2labels[gene] = gene
-
+        
+        comm2enriched_terms.setdefault(comm_number, []).append(com_dict["geneset"])
+    
+    comm2showingterms= {} ## {comm: terms}
+    
+    comm2showingterms = get_hierarchy_terms(comm2enriched_terms, level=4)
+    
+    community2colour_dict = {ccom :COMMUNITY_COLOURS[selected_comms.index(ccom)%len(COMMUNITY_COLOURS)] for ccom in selected_comms}
     
     ### Centrality nodes ###
     for st, clr in CENTRALITY_COLOURS.items():
@@ -593,18 +629,18 @@ def plot_graph_drawing(G, enriched_df, node_stats_df, edge_stats_df, outpath, n_
         if known_link:
             edge2colors[(u, v)] = '#27AE60'  # Green for enriched
             edge2widths[(u, v)] = width +0.25# 5
-            edge2alphas[(u, v)] = 0.95
+            edge2alphas[(u, v)] = 0.9
         else:
             edge2colors[(u, v)] = '#BDC3C7'  # Light gray
             edge2widths[(u, v)] = width #0.3
-            edge2alphas[(u, v)] = 0.6
+            edge2alphas[(u, v)] = 0.4
     
 
     ### Plotting script ###
     from netgraph import Graph
     import matplotlib.pyplot as plt
     # Create figure
-    fig, ax = plt.subplots(figsize=(36, 36), facecolor='white', dpi=800)
+    fig, ax = plt.subplots(figsize=(24, 18), facecolor='white', dpi=800)
 
     # Draw network using netgraph
     plot_instance = Graph(
@@ -625,24 +661,67 @@ def plot_graph_drawing(G, enriched_df, node_stats_df, edge_stats_df, outpath, n_
     )
 
 
-    add_community_terms_to_plot(ax, plot_instance, enriched_df, node2community, only_significant=only_significant)
+   # add_community_terms_to_plot(
+   #     ax, 
+   #     plot_instance, 
+   #     community2terms=comm2showingterms, 
+   #     node_to_community=node2community, 
+   #     community_to_colors=community2colour_dict
+   # )
 
+   
     # Create legend
     from matplotlib.patches import Patch
+    from matplotlib.lines import Line2D
+
+     ## Get terms patch on legend
+    terms_patches = []
+    for comm, terms in comm2showingterms.items():
+        for term in terms:
+            terms_patches.append(Patch(facecolor=community2colour_dict[comm], label=term))
 
     legend_elements = [
         Patch(facecolor=color, label=key.replace('top_', '').replace('_', ' ').title())
         for key, color in CENTRALITY_COLOURS.items()
+    ] + [Patch(facecolor="lime", label="has known link")] + [
+        Patch(facecolor=community2colour_dict[comm], label=f"Community {comm}") for comm in selected_comms
+    ] + [
+        Line2D([0], [0], marker="^", color="w", markerfacecolor="black", markersize=12, linewidth=0, label="TF"),
+        Line2D([0], [0], marker="o", color="w", markerfacecolor="black", markersize=12, linewidth=0, label="Gene")
     ]
 
+    # Add a separate legend for terms alone
+    from matplotlib.legend import Legend
+
+    terms_patches = []
+    for comm, terms in comm2showingterms.items():
+        for term in terms:
+            terms_patches.append(Patch(facecolor=community2colour_dict[comm], label=term))
+
+    # If there are any term patches, add a second legend for them
+    if len(terms_patches) > 0:
+        # Place the terms legend to the right, below the main legend
+        terms_legend = plt.legend(
+            handles=terms_patches,
+            loc='upper left',
+            bbox_to_anchor=(1, 1),
+            title='Top Enriched Terms',
+            fontsize=13,
+            title_fontsize=14,
+            frameon=False,
+            ncol=1
+        )
+        # Add the main legend back (as adding a new legend removes previous ones)
+        ax.add_artist(terms_legend)
+
     # Add title
-    ax.set_title('Community Graph with Enriched Gene Sets\n(* indicates significant enrichment)', 
+    ax.set_title('Community Graph with Enriched Gene Sets', 
                 fontsize=16, fontweight='bold', pad=20)
 
-    plt.legend(handles=legend_elements, loc='upper left', bbox_to_anchor=(1, 1), 
-            title='Top Centrality Nodes', fontsize=10)
+    plt.legend(handles=legend_elements, loc='lower left', bbox_to_anchor=(1, 0.05), 
+            title='Top Centrality Nodes and Communities', fontsize=13, ncols=1, title_fontsize=14)
     plt.tight_layout()
-    plt.savefig(outpath)
+    plt.savefig(outpath, dpi=800)
     
 
 
@@ -754,7 +833,7 @@ def get_top_terms_w_comms_nodes(df, k=5):
     return comm2node_dict
 
 
-def add_community_terms_to_plot(ax, plot_instance, top_terms, node_to_community, community_colors=None, only_significant=False):
+def add_community_terms_to_plot(ax, plot_instance, community2terms, node_to_community, community_to_colors, only_significant=False):
     """
     Add enriched term labels to a netgraph plot based on communities
     
@@ -764,14 +843,11 @@ def add_community_terms_to_plot(ax, plot_instance, top_terms, node_to_community,
         The axes object with the plot
     plot_instance : netgraph.Graph
         The netgraph Graph instance
-    top_terms : pd.DataFrame
-        DataFrame with top terms per community (columns: 'community', 'geneset', 'significant', etc.)
+    community2terms : dict
+        {comm_number:list(geneset_terms)}
     node_to_community : dict
         Mapping of nodes to their community assignments
     """
-    from config import COMMUNITY_COLOURS
-
-    community_colors = COMMUNITY_COLOURS if community_colors is None else community_colors
     # Get node positions from the netgraph instance
     node_positions = plot_instance.node_positions
     
@@ -784,49 +860,48 @@ def add_community_terms_to_plot(ax, plot_instance, top_terms, node_to_community,
         if comm_nodes:
             x_coords = [node_positions[node][0] for node in comm_nodes]
             y_coords = [node_positions[node][1] for node in comm_nodes]
-            centroid = (np.mean(x_coords), np.mean(y_coords))
+            centroid = (np.median(x_coords), np.median(y_coords))
             community_positions[comm] = centroid
 
     
-    # Add term labels
-    # Ensure top_terms is a DataFrame and contains 'community' column.
-    comm_col='community'
-    if not isinstance(top_terms, pd.DataFrame):
-        raise TypeError(f"top_terms must be a pandas DataFrame, but got {type(top_terms)}")
-    if comm_col not in top_terms.columns:
-        raise KeyError(
-            f"{comm_col} column not found in top_terms DataFrame in add_community_terms_to_plot. "
-            f"Available columns: {list(top_terms.columns)}"
-        )
-    community_terms = top_terms.groupby(comm_col)
     
-    for comm, group in community_terms:
+    for comm, terms_lst in community2terms.items():
         if comm in community_positions:
             cx, cy = community_positions[comm]
-            n_terms = len(group)
+            n_terms = len(terms_lst)
             
             # Place terms in a circle around the centroid
-            for idx, (_, row) in enumerate(group.iterrows()):
-                if only_significant and not row['significant']: 
-                    continue
+            for idx, term in enumerate(terms_lst):
+                if term == "Other Pathways": continue
                 angle = 2 * np.pi * idx / n_terms
-                radius = 0.075  # Adjust this to control distance from centroid
+                radius = 0.085  # Adjust this to control distance from centroid
                 x_offset = cx + radius * np.cos(angle)
                 y_offset = cy + radius * np.sin(angle)
                 
                 # Format the label
-                term_name = "_".join(row['geneset'].split("_")[1:])
-                term_name = term_name.title()[:35]  # Limit length
-                if row['significant']:
-                    term_name += ' *'
-                
+                #term_name = "_".join(term.split("_")[1:])
+                term_name = term.title()[:35]  # Limit length
                 # Add text with background
                 ax.text(x_offset, y_offset, term_name, 
-                       fontsize=10 if n_terms > 2 else 12,
-                       fontweight='bold' if row['significant'] else 'normal',
+                       fontsize=10 if n_terms > 3 else 12,
+                       fontweight='bold', #if row['significant'] else 'normal',
                        ha='center', va='center',
                        bbox=dict(boxstyle='round,pad=0.4', 
-                                facecolor=community_colors[communities.index(comm)%len(community_colors)], 
+                                facecolor=community_to_colors[comm], 
                                 edgecolor='black', 
                                 alpha=0.6),
                        zorder=1000) 
+
+
+def get_hierarchy_terms(comm2terms:dict, level=3):
+    """
+    will show ontologically higher terms from go obo, reactome, hallmark etc.
+    """
+    from lib.enriched_terms_processing import EnrichmentTermGrouper
+    grouper = EnrichmentTermGrouper()
+    rv = {}
+    for comm, termslist in comm2terms.items():
+        grouped = grouper.group_terms_from_prefixed_list(termslist, go_level=level)
+        rv[comm] = list(grouped.keys())
+    
+    return rv

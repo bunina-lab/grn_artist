@@ -527,9 +527,9 @@ class GraphStats:
             if not nx.is_strongly_connected(self.graph):
                 component = self.get_largest_strongly_connected_component()
                 subgraph = self.graph.subgraph(component)
-                self.eccentricity = nx.eccentricity(subgraph, weight="weight")
+                self.eccentricity = nx.eccentricity(subgraph, weight="abs_weight")
             else:
-                self.eccentricity = nx.eccentricity(self.graph, weight="weight")
+                self.eccentricity = nx.eccentricity(self.graph, weight="abs_weight")
         return self.eccentricity
     
     def get_largest_strongly_connected_component(self):

@@ -41,6 +41,42 @@ def compare_to_null_model(G, metric_func, n_simulations=1000):
 
 
 class GraphMetricsComparator:
+    
+    ACCEPTED_KEYS= [
+        'n_edges', 
+        'n_nodes', 
+        'avg_in_degree', 
+        'avg_out_degree', 
+        'avg_degree', 
+        'avg_closeness_centrality', 
+        'avg_degree_centrality', 
+        'avg_betweenness_centrality', 
+        'avg_eigenvector_centrality', 
+        'avg_pagerank_score', 
+        'avg_eccentricity', 
+        'diameter', 
+        'density', 
+        'transitivity', 
+        'n_isolate_subgraphs', 
+        'n_triangles', 
+        'degree_assortativity', 
+        'degree_centralization', 
+        'average_clustering_coeff', 
+        'global_efficiency', 
+        'shannon_vertex_entropy', 
+        'structural_entropy', 
+        'von_neumann_entropy', 
+        'shannon_degree_centrality_entropy', 
+        'shannon_betweenness_centrality_entropy', 
+        'shannon_pagerank_centrality_entropy', 
+        'proxy_criticality_branching_ratio', 
+        'proxy_average_sensitivity', 
+        'girth', 
+        'undireced_n_egdes', 
+        'n_self_loops', 
+        'n_communities'
+        ]
+
     def __init__(self, observed_stats_json, out_dir, simulations_dir=None) -> None:
 
         self.observed_stats_json = observed_stats_json
@@ -61,7 +97,7 @@ class GraphMetricsComparator:
         
         #print(graph_stats_jsons)
         
-        sim_dist_dict = {key : [] for key, value in self.observed_stats.items() if value is not None}
+        sim_dist_dict = {key : [] for key, value in self.observed_stats.items() if value is not None and key in self.ACCEPTED_KEYS}
         for json_file in graph_stats_jsons:
             sim_stats_dict = read_json(json_file)
             for key, value in sim_stats_dict.items():
@@ -91,6 +127,8 @@ class GraphMetricsComparator:
     def calc_process(self):
         for metric, dist_list in self.simulations_dist_dict.items():
             obs_val = self.observed_stats[metric]
+            #print(type(obs_val))
+            if isinstance(obs_val, list): continue
             z_score, mean_val, std_val = self.calc_z_score(obs_val, dist_list)
             p_val = self.calc_p(z_score) if z_score else None
             percentile_position = self.calc_percentile_position(obs_val, dist_list)
@@ -375,7 +413,7 @@ class CentralityMetricsComparator:
         'harmonic_centrality',
         'katz_centrality',
         'triangles',
-        'eccentricity',
+        #'eccentricity',
     }
     
     def __init__(self, 
@@ -399,6 +437,9 @@ class CentralityMetricsComparator:
         self.node_column = node_column
         self.name1 = name1
         self.name2 = name2
+
+        ## See: https://pmc.ncbi.nlm.nih.gov/articles/PMC12271745/
+        self.jaccard_index = None
         
         # Determine if we're using DataFrames or computing from graphs
         if df1 is not None and df2 is not None:
@@ -408,8 +449,6 @@ class CentralityMetricsComparator:
         else:
             raise ValueError("Must provide df1, df2")
         
-        ## See: https://pmc.ncbi.nlm.nih.gov/articles/PMC12271745/
-        self.jaccard_index = None
     
     def _init_from_dataframes(self, df1: pd.DataFrame, df2: pd.DataFrame, metrics: Optional[List[str]]):
         """Initialize from pre-calculated centrality DataFrames."""
@@ -451,7 +490,7 @@ class CentralityMetricsComparator:
         self.centralities1 = {}
         self.centralities2 = {}
         
-        print(f"Loading {len(self.metrics)} centrality metrics from dataframes...")
+        #print(f"Loading {len(self.metrics)} centrality metrics from dataframes...")
         for metric in self.metrics:
             print(f"  - {metric}")
             
@@ -462,12 +501,11 @@ class CentralityMetricsComparator:
                 self.centralities1[metric] = df1[metric].to_dict()
                 self.centralities2[metric] = df2[metric].to_dict()
         
-        print("Done!\n")
+       # print("Done!\n")
         
         # Store dataframes for additional features if needed
         self.df1 = df1
         self.df2 = df2
-    
     
     def compute_changes(self, metric: str = None) -> pd.DataFrame:
         """
@@ -499,6 +537,10 @@ class CentralityMetricsComparator:
         mean1, std1 = cent1_vals.mean(), cent1_vals.std()
         mean2, std2 = cent2_vals.mean(), cent2_vals.std()
         
+        # Pre-compute sorted lists for ranking (to avoid recomputing for each node)
+        sorted_cent1 = sorted([v for v in cent1.values() if not pd.isna(v)], reverse=True)
+        sorted_cent2 = sorted([v for v in cent2.values() if not pd.isna(v)], reverse=True)
+        
         for node in self.common_nodes:
             cent1_val = cent1.get(node, 0)
             cent2_val = cent2.get(node, 0)
@@ -521,9 +563,19 @@ class CentralityMetricsComparator:
             z2 = (cent2_val - mean2) / std2 if std2 > 0 else 0
             z_diff = z2 - z1
             
-            # Rank in each network
-            rank1 = sorted([v for v in cent1.values() if not pd.isna(v)], reverse=True).index(cent1_val) + 1
-            rank2 = sorted([v for v in cent2.values() if not pd.isna(v)], reverse=True).index(cent2_val) + 1
+            # Rank in each network - FIXED VERSION
+            try:
+                rank1 = sorted_cent1.index(cent1_val) + 1
+            except ValueError:
+                # Value not in list - assign rank based on where it would fit
+                rank1 = sum(1 for v in sorted_cent1 if v > cent1_val) + 1
+            
+            try:
+                rank2 = sorted_cent2.index(cent2_val) + 1
+            except ValueError:
+                # Value not in list - assign rank based on where it would fit
+                rank2 = sum(1 for v in sorted_cent2 if v > cent2_val) + 1
+            
             rank_change = rank1 - rank2  # Positive means improved rank
             
             # Percentile in each network
@@ -875,7 +927,15 @@ class CentralityMetricsComparator:
             
             if len(significant_nodes) == 0:
                 print(f"Warning: No nodes have significant metrics at p < {significance_level}")
-                # Keep all nodes if none are significant
+                # Keep the most changed 10 nodes if none are significant
+                if heatmap_data.shape[1] > 10:
+                    # Compute node-wise max absolute z_diff and keep top 10 nodes
+                    abs_change = heatmap_data.abs().max(axis=0)
+                    most_changed_nodes = abs_change.sort_values(ascending=False).head(10).index.tolist()
+                    heatmap_data = heatmap_data[most_changed_nodes]
+                    p_value_data = p_value_data[most_changed_nodes]
+                    significance_mask = significance_mask[most_changed_nodes]
+                    print(f"Displaying the 10 most changed nodes out of {heatmap_data.shape[1]}")
             else:
                 # Filter both heatmap data and p-value data
                 heatmap_data = heatmap_data[significant_nodes]
